@@ -28,7 +28,12 @@ jobs:
         run: |
           # Allow test command to exit non-zero due to intentional failing tests
           # Validation happens via grep on output.txt instead
-          ./tools/tusk test || true
+          set +e
+          ./tools/tusk test
+          EXIT_CODE=$?
+          set -e
+
+          printf "Test command exited with code: %s\n" $EXIT_CODE
           grep -q "3 failed, 3 skipped, 0 errored" build/output.txt
 
   build-release:
