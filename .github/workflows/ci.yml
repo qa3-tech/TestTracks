@@ -26,7 +26,9 @@ jobs:
 
       - name: Run Tests
         run: |
-          ./tools/tusk test
+          # Allow test command to exit non-zero due to intentional failing tests
+          # Validation happens via grep on output.txt instead
+          ./tools/tusk test || true
           grep -q "3 failed, 3 skipped, 0 errored" build/output.txt
 
   build-release:
