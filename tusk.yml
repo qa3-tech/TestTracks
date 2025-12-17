@@ -1,0 +1,46 @@
+tasks:
+  build:
+    usage: Build the test runner
+    options:
+      build_config:
+        usage: build configuration of binary. Default is Debug.
+        default: "Debug"
+    run:
+      - dotnet build src -c ${build_config} --no-restore  /property:GenerateFullPaths=true /consoleloggerparameters:NoSummary -o build -nologo
+  build-tests:
+    usage: Build the tests
+    run:
+      - dotnet build tests -c Debug --no-restore /property:GenerateFullPaths=true /consoleloggerparameters:NoSummary -o build -nologo
+  clean:
+    usage: Remove all build artifacts
+    run:
+      - rm -rf build
+      - dotnet clean src
+      - dotnet clean tests
+      - dotnet restore src --force-evaluate
+      - dotnet restore tests --force-evaluate
+  test:
+    usage: Run tests
+    run:
+      - task:
+          name: clean
+      - task:
+          name: build-tests
+      - command:
+          exec: ./TestTracks.Tests
+          dir: build
+  pkg:
+    usage: Package library
+    options:
+      version:
+        usage: version of application
+        environment: RELEASE_VERSION
+        default: "0.0.0"
+    run:
+      - task:
+          name: clean
+      - command:
+          exec: dotnet publish src -c Release --self-contained false /property:Version=${version} /property:CopyOutputSymbolsToPublishDirectory=false /property:GenerateFullPaths=true /consoleloggerparameters:NoSummary -o build -nologo
+      - command:
+          exec: tar -cJf ../TestTracks-${version}.tar.xz *
+          dir: ./build
