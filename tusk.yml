@@ -29,8 +29,8 @@ tasks:
       - command:
           exec: ./TestTracks.Tests | tee output.txt
           dir: build
-  pkg:
-    usage: Package library
+  release:
+    usage: Release package of library
     options:
       version:
         usage: version of application
