@@ -7,6 +7,16 @@ open Examples
 module Program =
     [<EntryPoint>]
     let main args =
-        let allSuites = [ basicTests; fileLoggingTests; railwayTests; databaseTests ]
+        let allSuites =
+            [ basicTests
+              fileLoggingTests
+              railwayTests
+              databaseTests
+              skipTests
+              dataDrivenTests
+              additionTests
+              validationTests
+              failingTests
+              dependentTests ]
 
-        TestTracks.parseTestArgs args allSuites
+        TestTracks.parseTestArgs args allSuites 

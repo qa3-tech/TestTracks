@@ -43,7 +43,9 @@ module Examples =
             (fun env ->
                 writeLog env "Test session completed"
                 printfn "[Teardown] Test output written to: %s" env.OutputFile
-            // Optionally delete: File.Delete(env.OutputFile)
+                printfn "[Teardown] Confirmed Test output exists: %b" (File.Exists env.OutputFile)
+                File.Delete env.OutputFile
+                printfn "[Teardown] Confirmed Test output deleted: %b" (not (File.Exists env.OutputFile))
             )
             // tests to run
             [
@@ -128,3 +130,124 @@ module Examples =
               fun db ->
                   test "has connection string" (fun () ->
                       assertEqual "test-db" db.Connection "should have correct connection") ]
+
+    let skipTests =
+        suite
+            "Skip Tests"
+            [ testSkip "not implemented" "waiting for feature X"
+
+              test "skip on windows" (fun () ->
+                  test' {
+                      let isWindows =
+                          System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                              System.Runtime.InteropServices.OSPlatform.Windows
+                          )
+
+                      do! skipIf isWindows "Linux/macOS only"
+                      return! assertTrue true "runs on non-Windows"
+                  })
+
+              test "skip in CI" (fun () ->
+                  test' {
+                      let isCI = System.Environment.GetEnvironmentVariable("CI") <> null
+                      do! skipIf isCI "too slow for CI"
+                      return! assertTrue true "runs locally"
+                  })
+
+              test "require env var" (fun () ->
+                  test' {
+                      let apiKey = System.Environment.GetEnvironmentVariable("API_KEY")
+                      do! skipUnless (apiKey <> null) "API_KEY not set"
+                      return! assertTrue (apiKey.Length > 0) "API_KEY has value"
+                  }) ]
+
+    let dataDrivenTests =
+        let doublingCases = [ (2, 4); (5, 10); (10, 20); (0, 0); (-5, -10) ]
+
+        suite
+            "Data-Driven Tests"
+            [ for (input, expected) in doublingCases do
+                  test (sprintf "%d * 2 = %d" input expected) (fun () ->
+                      assertEqual expected (input * 2) "should double") ]
+
+    let additionTests =
+        let cases = [ (1, 1, 2); (0, 0, 0); (-1, 1, 0); (100, 200, 300) ]
+
+        suite
+            "Addition Tests"
+            [ for (a, b, expected) in cases do
+                  test (sprintf "%d + %d = %d" a b expected) (fun () -> assertEqual expected (a + b) "should add") ]
+
+    // Validation example with combine (accumulates all errors)
+    type Order =
+        { Total: decimal
+          Items: string list
+          CustomerId: int option }
+
+    let validationTests =
+        let validOrder =
+            { Total = 99.99m
+              Items = [ "Widget" ]
+              CustomerId = Some 123 }
+
+        let invalidOrder =
+            { Total = 0m
+              Items = []
+              CustomerId = None }
+
+        suite
+            "Validation Tests"
+            [ test "valid order passes all checks" (fun () ->
+                  assertTrue (validOrder.Total > 0m) "total positive"
+                  |> combine (assertTrue (validOrder.Items.Length > 0) "has items")
+                  |> combine (assertSome validOrder.CustomerId "has customer"))
+
+              test "invalid order fails multiple checks" (fun () ->
+                  // This test expects failures - we invert to prove combine accumulates
+                  let result =
+                      assertTrue (invalidOrder.Total > 0m) "total positive"
+                      |> combine (assertTrue (invalidOrder.Items.Length > 0) "has items")
+                      |> combine (assertSome invalidOrder.CustomerId "has customer")
+
+                  match result with
+                  | Fail errors -> assertEqual 3 errors.Length "should have 3 errors"
+                  | _ -> fail "expected failures") ]
+
+    let failingTests = suite "Failing Tests (Expected)" [
+        test "single assertion failure" (fun () ->
+            assertEqual 42 99 "should be 42"
+        )
+    
+        test "multiple failures with combine" (fun () ->
+            assertTrue false "first check"
+            |> combine (assertEqual "expected" "actual" "second check")
+            |> combine (assertSome None "third check")
+        )
+    
+        test "failure in test' short-circuits" (fun () -> test' {
+            do! assertTrue false "fails here"
+            return! assertTrue true "never reaches this"
+        })
+    ]
+                  
+    // Dependent assertions with test' (short-circuits)
+    let dependentTests = suite "Dependent Tests" [
+        test "all pass when valid" (fun () -> test' {
+            let x = 42
+            do! assertTrue (x > 0) "must be positive"
+            do! assertTrue (x < 100) "must be under 100"
+            return! assertEqual 42 x "value matches"
+        })
+    
+        test "short-circuits on failure" (fun () ->
+            let mutable secondRun = false
+            let result = test' {
+                do! assertTrue false "this fails"
+                secondRun <- true  // should never run
+                return! assertTrue true "unreachable"
+            }
+            match result with
+            | Fail _ -> assertFalse secondRun "second assertion should not run"
+            | _ -> fail "expected failure"
+        )
+    ]

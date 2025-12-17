@@ -319,7 +319,7 @@ let printResults outcomes =
                 | Skipped _ -> true
                 | _ -> false))
 
-    if allPassed then 0 else -1
+    if allPassed then 0 else 1
 
 
 let parseTestArgs (args: string array) (suites: TestSuite list) =
