@@ -146,11 +146,13 @@ module Examples =
                       return! assertTrue true "runs on non-Windows"
                   })
 
-              test "skip in CI" (fun () ->
+              test "skip expensive tests" (fun () ->
                   test' {
-                      let isCI = System.Environment.GetEnvironmentVariable("CI") <> null
-                      do! skipIf isCI "too slow for CI"
-                      return! assertTrue true "runs locally"
+                      let runExpensive =
+                          System.Environment.GetEnvironmentVariable("RUN_EXPENSIVE_TESTS") <> null
+
+                      do! skipUnless runExpensive "set RUN_EXPENSIVE_TESTS=1 to run"
+                      return! assertTrue true "expensive test logic here"
                   })
 
               test "require env var" (fun () ->

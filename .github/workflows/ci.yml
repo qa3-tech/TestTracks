@@ -32,7 +32,7 @@ jobs:
           ./tools/tusk test
 
       - name: Validate Results
-        run: grep -q "3 failed, 3 skipped, 0 errored" build/output.txt
+        run: grep -q "3 failed, 4 skipped, 0 errored" build/output.txt
 
   build-release:
     if: startsWith(github.ref, 'refs/tags/v')
