@@ -14,6 +14,8 @@ A purely functional testing framework using Railway-Oriented Programming (ROP) p
 
 Reference the TestTracks DLL from your test project.
 
+Requirements: F# 4.1+ (.NET Framework 4.6.1+, .NET Core 2.0+, or any .NET 5+)
+
 ## Quick Start
 
 ### 1. Create Your Tests
@@ -28,7 +30,7 @@ let mathTests = suite "Math Tests" [
     test "addition works" (fun () ->
         assertEqual 4 (2 + 2) "should equal 4"
     )
-    
+
     test "string length" (fun () ->
         assertEqual 5 "hello".Length "should be 5 chars"
     )
@@ -79,7 +81,6 @@ dotnet build
 ./MyProject.Tests --parallel
 ```
 
-
 ## Core Concepts
 
 ### 1. Test Results (The Railway)
@@ -87,9 +88,9 @@ dotnet build
 Tests return one of three results:
 
 ```fsharp
-type TestResult<'a> = 
+type TestResult<'a> =
     | Pass of 'a      // Success track
-    | Fail of errors  // Failure track  
+    | Fail of errors  // Failure track
     | Skip of reason  // Skip track
 ```
 
@@ -176,6 +177,7 @@ test "dependent steps" (fun () -> test' {
 Create shared environment for all tests in a suite:
 
 **F# Example:**
+
 ```fsharp
 type MyEnv = {
     Database: Connection
@@ -205,7 +207,7 @@ let myTests = suiteWith "Database Tests"
             let result = query env.Database "SELECT 1"
             assertOk result "query should succeed"
         )
-        
+
         fun env -> test "can write to file" (fun () ->
             File.AppendAllText(env.OutputFile, "test data")
             assertTrue (File.Exists(env.OutputFile)) "file should exist"
@@ -214,6 +216,7 @@ let myTests = suiteWith "Database Tests"
 ```
 
 **Key Points:**
+
 - Buildup runs **once** and returns a value of any type
 - All tests receive this **same value** as a parameter
 - Tests run **sequentially** in array order
@@ -261,8 +264,9 @@ Use the test environment to pass arrays of test data. This gives you property-ba
 ### Pattern 1: Simple Test Cases
 
 **F# Example:**
+
 ```fsharp
-let dataDrivenTests = 
+let dataDrivenTests =
     let testCases = [
         (2, 4)
         (5, 10)
@@ -270,7 +274,7 @@ let dataDrivenTests =
         (0, 0)
         (-5, -10)
     ]
-    
+
     suite "Data-Driven Tests" [
         // Generate a test for each case
         for (input, expected) in testCases do
@@ -290,6 +294,7 @@ let dataDrivenTests =
 ### Pattern 2: Using Environment for Complex Data
 
 **F# Example:**
+
 ```fsharp
 type User = { Name: string; Age: int; Email: string }
 
@@ -320,12 +325,12 @@ let userTests = suiteWith "User Validation"
                     assertTrue (validateUser user) "should be valid"
                 )
         ] |> fun s -> s.Tests.Head
-        
+
         // Single test that runs all cases and collects errors
         fun env -> test "all invalid users rejected" (fun () ->
             env.InvalidUsers
             |> List.map (fun user ->
-                assertFalse (validateUser user) 
+                assertFalse (validateUser user)
                     (sprintf "%s should be invalid" user.Name)
             )
             |> List.reduce combine  // Accumulates all errors!
@@ -360,7 +365,7 @@ test "validate all properties" (fun () ->
 let fileBasedTests = suiteWith "CSV Tests"
     (fun () ->
         let csv = File.ReadAllLines("testdata.csv")
-        let cases = 
+        let cases =
             csv
             |> Array.skip 1  // Skip header
             |> Array.map (fun line ->
@@ -384,6 +389,7 @@ let fileBasedTests = suiteWith "CSV Tests"
 ### Short-Circuit vs Accumulate Errors
 
 **Short-circuit** (stop at first failure):
+
 ```fsharp
 test "dependent checks" (fun () -> test' {
     let! user = findUser id |> assertSome "user exists"
@@ -397,6 +403,7 @@ test "dependent checks" (fun () -> test' {
 ```
 
 **Accumulate** (collect all failures):
+
 ```fsharp
 test "independent checks" (fun () ->
     assertSome user "user exists"
@@ -411,7 +418,8 @@ test "independent checks" (fun () ->
 //   ✗ age matches: expected 30, got 25
 ```
 
-**Key difference:** 
+**Key difference:**
+
 - `test'` with `let!` stops at first error (good for dependent checks)
 - `combine` evaluates everything and merges errors (good for independent checks)
 
@@ -458,11 +466,13 @@ runTestsMatching "database" allSuites  // Matches any test with "database" in na
 ```
 
 **When to use parallel:**
+
 - Suites are independent (no shared state)
 - Each suite has its own resources (separate databases, files, etc.)
 - You want faster test execution
 
 **When to use sequential:**
+
 - Suites share resources
 - Order matters across suites
 - Easier debugging
@@ -513,14 +523,14 @@ module MyTests =
                 File.WriteAllText(file, "hello")
                 assertTrue (File.Exists(file)) "file should exist"
             )
-            
+
             fun env -> test "can read file" (fun () -> test' {
                 let file = Path.Combine(env.TempDir, "test.txt")
                 File.WriteAllText(file, "hello")
                 let content = File.ReadAllText(file)
                 return! assertEqual "hello" content "should read content"
             })
-            
+
             fun env -> testSkip "performance test" "too slow"
         ]
 
@@ -529,7 +539,7 @@ module MyTests =
         test "addition" (fun () ->
             assertEqual 4 (2 + 2) "should add"
         )
-        
+
         test "composition" (fun () ->
             assertTrue (2 > 0) "positive"
             |> combine (assertFalse (2 < 0) "not negative")
@@ -545,6 +555,7 @@ module MyTests =
 ## Best Practices
 
 ### 1. Keep Tests Pure
+
 ```fsharp
 // Good: Pure function, returns result
 test "validate email" (fun () ->
@@ -560,6 +571,7 @@ test "send email" (fun () ->
 ```
 
 ### 2. Use Buildup for Shared Resources
+
 ```fsharp
 // Good: Share database connection
 suiteWith "DB Tests"
@@ -577,6 +589,7 @@ suite "DB Tests" [
 ```
 
 ### 3. Make Failures Clear
+
 ```fsharp
 // Good: Descriptive message
 assertEqual 42 actual "user age should be 42"
@@ -586,6 +599,7 @@ assertEqual 42 actual "wrong"
 ```
 
 ### 4. Test One Thing
+
 ```fsharp
 // Good: Focused test
 test "validates positive numbers" (fun () ->
@@ -606,6 +620,7 @@ test "validation" (fun () ->
 ```
 
 ### 5. Use Skips Wisely
+
 ```fsharp
 // Good: Clear reason
 testSkip "performance benchmark" "requires production data - run manually"
@@ -630,10 +645,10 @@ let (>=>) f g x =
     | Skip r -> Skip r
 
 // Example: composing reusable validation steps
-let validatePositive x = 
+let validatePositive x =
     if x > 0 then Pass x else fail "must be positive"
 
-let validateEven x = 
+let validateEven x =
     if x % 2 = 0 then Pass x else fail "must be even"
 
 let validatePositiveEven = validatePositive >=> validateEven
@@ -697,15 +712,16 @@ For most test code, `combine` (parallel assertions) and `bind` (sequential, depe
 
 ## Why Railway-Oriented?
 
-| Traditional Frameworks | TestTracks |
-|------------------------|------------|
-| Control flow hidden in attributes | Tests are plain functions |
-| Exceptions for failures | Failures are return values |
-| Framework controls execution | You control execution |
-| Setup/teardown via reflection | Explicit data flow |
-| Hard to compose | Compose with `bind`, `combine` |
+| Traditional Frameworks            | TestTracks                     |
+| --------------------------------- | ------------------------------ |
+| Control flow hidden in attributes | Tests are plain functions      |
+| Exceptions for failures           | Failures are return values     |
+| Framework controls execution      | You control execution          |
+| Setup/teardown via reflection     | Explicit data flow             |
+| Hard to compose                   | Compose with `bind`, `combine` |
 
 **Traditional (NUnit/xUnit style):**
+
 ```fsharp
 [<Test>]
 let ``my test`` () =
@@ -716,6 +732,7 @@ let ``my test`` () =
 ```
 
 **TestTracks — single assertion:**
+
 ```fsharp
 test "my test" (fun () ->
     let result = compute()
@@ -724,6 +741,7 @@ test "my test" (fun () ->
 ```
 
 **TestTracks — multiple independent assertions (accumulates errors):**
+
 ```fsharp
 test "validate order" (fun () ->
     assertTrue (order.Total > 0) "total positive"
@@ -733,6 +751,7 @@ test "validate order" (fun () ->
 ```
 
 **TestTracks — dependent assertions (short-circuits on failure):**
+
 ```fsharp
 test "dependent checks" (fun () -> test' {
     do! assertTrue (x > 0) "must be positive"    // Fails? Stops here.

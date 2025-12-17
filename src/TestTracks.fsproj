@@ -6,6 +6,7 @@
     <AssemblyName>TestTracks</AssemblyName>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <SelfContained>false</SelfContained>
   </PropertyGroup>
 
 

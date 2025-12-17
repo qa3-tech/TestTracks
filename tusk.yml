@@ -27,7 +27,7 @@ tasks:
       - task:
           name: build-tests
       - command:
-          exec: ./TestTracks.Tests
+          exec: ./TestTracks.Tests | tee output.txt
           dir: build
   pkg:
     usage: Package library
@@ -40,7 +40,7 @@ tasks:
       - task:
           name: clean
       - command:
-          exec: dotnet publish src -c Release --self-contained false /property:Version=${version} /property:CopyOutputSymbolsToPublishDirectory=false /property:GenerateFullPaths=true /consoleloggerparameters:NoSummary -o build -nologo
+          exec: dotnet build src -c Release /property:Version=${version} /property:DebugType=none /property:GenerateFullPaths=true /consoleloggerparameters:NoSummary -o build -nologo
       - command:
           exec: tar -cJf ../TestTracks-${version}.tar.xz *
           dir: ./build
