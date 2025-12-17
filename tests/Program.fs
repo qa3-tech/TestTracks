@@ -17,6 +17,12 @@ module Program =
               additionTests
               validationTests
               failingTests
-              dependentTests ]
+              dependentTests 
+              nilTests
+              numericTests
+              stringTests
+              compositionTests
+              edgeCaseTests
+              regexPatternTests]
 
         TestTracks.parseTestArgs args allSuites 

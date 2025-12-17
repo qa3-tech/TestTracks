@@ -114,15 +114,69 @@ suite "Suite Name" [
 
 All assertions return `TestResult`:
 
+**Equality:**
+
 ```fsharp
 assertEqual expected actual "message"
 assertNotEqual unexpected actual "message"
+```
+
+**Boolean:**
+
+```fsharp
 assertTrue condition "message"
 assertFalse condition "message"
+```
+
+**Option:**
+
+```fsharp
 assertSome option "message"
 assertNone option "message"
+```
+
+**Result:**
+
+```fsharp
 assertOk result "message"
 assertError result "message"
+```
+
+**Nil Checking:**
+
+```fsharp
+assertNil value "message"
+assertNotNil value "message"
+```
+
+**Collections:**
+
+```fsharp
+assertEmpty collection "message"
+assertNotEmpty collection "message"
+assertLen expectedLength collection "message"
+assertContains element collection "message"
+assertNotContains element collection "message"
+assertSubset subset collection "message"
+assertNotSubset subset collection "message"
+assertElementsMatch listA listB "message"  // Same elements, any order
+```
+
+**Numeric Comparisons:**
+
+```fsharp
+assertGreater actual expected "message"
+assertGreaterOrEqual actual expected "message"
+assertLess actual expected "message"
+assertLessOrEqual actual expected "message"
+assertInDelta expected actual delta "message"  // For floating-point comparisons
+```
+
+**Strings & Regex:**
+
+```fsharp
+assertRegexp pattern str "message"
+assertNotRegexp pattern str "message"
 ```
 
 ### 4. Railway Composition
@@ -629,6 +683,29 @@ testSkip "performance benchmark" "requires production data - run manually"
 testSkip "broken" "doesn't work"
 ```
 
+### 6. Choose the Right Assertion
+
+```fsharp
+// Good: Specific assertion for collections
+assertContains 3 [1; 2; 3] "should contain 3"
+assertLen 5 list "should have 5 elements"
+assertElementsMatch [1; 2; 3] [3; 2; 1] "same elements"
+
+// Less clear: Generic assertions
+assertTrue (List.contains 3 [1; 2; 3]) "should contain 3"
+assertTrue (list.Length = 5) "should have 5 elements"
+```
+
+### 7. Use assertInDelta for Floating-Point
+
+```fsharp
+// Good: Account for floating-point precision
+assertInDelta 3.14159 actual 0.0001 "should be close to pi"
+
+// Fragile: Exact equality on floats
+assertEqual 3.14159 actual "should be pi"  // May fail due to rounding
+```
+
 ## Extending the Framework
 
 ### Kleisli Composition (`>=>`)
@@ -672,16 +749,51 @@ For most test code, `combine` (parallel assertions) and `bind` (sequential, depe
 - `suite: name -> Test list -> TestSuite`
 - `suiteWith: name -> (unit -> 'env) -> ('env -> unit) -> (('env -> Test) list) -> TestSuite`
 
-### Assertions
+### Basic Assertions
 
 - `assertEqual: 'a -> 'a -> string -> TestResult<unit>`
 - `assertNotEqual: 'a -> 'a -> string -> TestResult<unit>`
 - `assertTrue: bool -> string -> TestResult<unit>`
 - `assertFalse: bool -> string -> TestResult<unit>`
+
+### Option Assertions
+
 - `assertSome: 'a option -> string -> TestResult<unit>`
 - `assertNone: 'a option -> string -> TestResult<unit>`
+
+### Result Assertions
+
 - `assertOk: Result<'a,'e> -> string -> TestResult<unit>`
 - `assertError: Result<'a,'e> -> string -> TestResult<unit>`
+
+### Nil Checking
+
+- `assertNil: 'a -> string -> TestResult<unit>`
+- `assertNotNil: 'a -> string -> TestResult<unit>`
+
+### Collection Assertions
+
+- `assertEmpty: 'a -> string -> TestResult<unit>`
+- `assertNotEmpty: 'a -> string -> TestResult<unit>`
+- `assertLen: int -> 'a -> string -> TestResult<unit>`
+- `assertContains: 'a -> 'b -> string -> TestResult<unit>`
+- `assertNotContains: 'a -> 'b -> string -> TestResult<unit>`
+- `assertSubset: 'a -> 'b -> string -> TestResult<unit>`
+- `assertNotSubset: 'a -> 'b -> string -> TestResult<unit>`
+- `assertElementsMatch: 'a -> 'b -> string -> TestResult<unit>`
+
+### Numeric Assertions
+
+- `assertGreater: 'a -> 'a -> string -> TestResult<unit>` (when 'a : comparison)
+- `assertGreaterOrEqual: 'a -> 'a -> string -> TestResult<unit>` (when 'a : comparison)
+- `assertLess: 'a -> 'a -> string -> TestResult<unit>` (when 'a : comparison)
+- `assertLessOrEqual: 'a -> 'a -> string -> TestResult<unit>` (when 'a : comparison)
+- `assertInDelta: 'a -> 'b -> float -> string -> TestResult<unit>` (numeric types)
+
+### String Assertions
+
+- `assertRegexp: string -> 'a -> string -> TestResult<unit>`
+- `assertNotRegexp: string -> 'a -> string -> TestResult<unit>`
 
 ### Runners
 

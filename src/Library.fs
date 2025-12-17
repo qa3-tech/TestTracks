@@ -80,7 +80,7 @@ let skipIf condition reason =
 let skipUnless condition reason =
     if not condition then Skip reason else Pass()
 
-// Assertion helpers (pure functions returning Results)
+// Basic assertions (pure functions returning Results)
 let assertEqual expected actual message =
     if expected = actual then
         pass
@@ -118,6 +118,183 @@ let assertError result message =
     match result with
     | Error _ -> pass
     | Ok x -> fail (sprintf "%s: expected Error, got Ok %A" message x)
+
+// Nil checking
+let assertNil value message =
+    match box value with
+    | null -> pass
+    | _ -> fail (sprintf "%s: expected null, got %A" message value)
+
+let assertNotNil value message =
+    match box value with
+    | null -> fail (sprintf "%s: expected non-null value" message)
+    | _ -> pass
+
+// Collections
+let assertEmpty collection message =
+    match box collection with
+    | null -> pass
+    | :? string as s when s.Length = 0 -> pass
+    | :? string -> fail (sprintf "%s: expected empty, got %A" message collection)
+    | :? System.Collections.ICollection as c when c.Count = 0 -> pass
+    | :? System.Collections.ICollection -> fail (sprintf "%s: expected empty, got %A" message collection)
+    | :? seq<obj> as s when Seq.isEmpty s -> pass
+    | :? seq<obj> -> fail (sprintf "%s: expected empty, got %A" message collection)
+    | _ -> fail (sprintf "%s: expected empty, got %A" message collection)
+
+let assertNotEmpty collection message =
+    match box collection with
+    | null -> fail (sprintf "%s: should not be empty" message)
+    | :? string as s when s.Length = 0 -> fail (sprintf "%s: should not be empty" message)
+    | :? string -> pass
+    | :? System.Collections.ICollection as c when c.Count = 0 -> fail (sprintf "%s: should not be empty" message)
+    | :? System.Collections.ICollection -> pass
+    | :? seq<obj> as s when Seq.isEmpty s -> fail (sprintf "%s: should not be empty" message)
+    | :? seq<obj> -> pass
+    | _ -> pass
+
+let assertLen expected collection message =
+    let getLen c =
+        match box c with
+        | :? string as s -> Some s.Length
+        | :? System.Collections.ICollection as col -> Some col.Count
+        | :? System.Collections.IEnumerable as e -> Some(e |> Seq.cast<obj> |> Seq.length)
+        | _ -> None
+
+    match getLen collection with
+    | Some actual when actual = expected -> pass
+    | Some actual -> failWith expected actual (sprintf "%s: length mismatch" message)
+    | None -> fail (sprintf "%s: cannot determine length" message)
+
+let assertContains element collection message =
+    match box collection with
+    | :? string as s when s.Contains(string element) -> pass
+    | :? string -> fail (sprintf "%s: %A not found in %A" message element collection)
+    | :? System.Collections.IEnumerable as e ->
+        match e |> Seq.cast<obj> |> Seq.exists (fun x -> x = box element) with
+        | true -> pass
+        | false -> fail (sprintf "%s: %A not found in %A" message element collection)
+    | _ -> fail (sprintf "%s: %A not found in %A" message element collection)
+
+let assertNotContains element collection message =
+    match box collection with
+    | :? string as s when s.Contains(string element) ->
+        fail (sprintf "%s: %A should not be in %A" message element collection)
+    | :? string -> pass
+    | :? System.Collections.IEnumerable as e ->
+        match e |> Seq.cast<obj> |> Seq.exists (fun x -> x = box element) with
+        | true -> fail (sprintf "%s: %A should not be in %A" message element collection)
+        | false -> pass
+    | _ -> pass
+
+let assertSubset subset collection message =
+    match box subset, box collection with
+    | (:? System.Collections.IEnumerable as sub), (:? System.Collections.IEnumerable as col) ->
+        let subList = sub |> Seq.cast<obj> |> Seq.toList
+        let colList = col |> Seq.cast<obj> |> Seq.toList
+
+        match subList |> List.forall (fun x -> List.exists ((=) x) colList) with
+        | true -> pass
+        | false -> fail (sprintf "%s: not all elements of subset found in collection" message)
+    | _ -> fail (sprintf "%s: arguments must be collections" message)
+
+let assertNotSubset subset collection message =
+    match box subset, box collection with
+    | (:? System.Collections.IEnumerable as sub), (:? System.Collections.IEnumerable as col) ->
+        let subList = sub |> Seq.cast<obj> |> Seq.toList
+        let colList = col |> Seq.cast<obj> |> Seq.toList
+
+        match subList |> List.forall (fun x -> List.exists ((=) x) colList) with
+        | true -> fail (sprintf "%s: subset should not be contained in collection" message)
+        | false -> pass
+    | _ -> fail (sprintf "%s: arguments must be collections" message)
+
+let assertElementsMatch listA listB message =
+    match box listA, box listB with
+    | (:? System.Collections.IEnumerable as a), (:? System.Collections.IEnumerable as b) ->
+        let aList = a |> Seq.cast<obj> |> Seq.toList
+        let bList = b |> Seq.cast<obj> |> Seq.toList
+
+        match aList.Length = bList.Length with
+        | false -> failWith aList.Length bList.Length (sprintf "%s: different lengths" message)
+        | true ->
+            // For each element in A, find and remove from B
+            let rec checkMatch remaining bRemaining =
+                match remaining with
+                | [] -> List.isEmpty bRemaining
+                | x :: xs ->
+                    match List.tryFindIndex ((=) x) bRemaining with
+                    | Some idx ->
+                        let newB = List.removeAt idx bRemaining
+                        checkMatch xs newB
+                    | None -> false
+
+            match checkMatch aList bList with
+            | true -> pass
+            | false -> failWith aList bList (sprintf "%s: elements don't match" message)
+    | _ -> fail (sprintf "%s: arguments must be collections" message)
+
+// Numeric comparisons
+let assertGreater actual expected message =
+    match actual > expected with
+    | true -> pass
+    | false -> failWith (sprintf "> %A" expected) actual (sprintf "%s: not greater" message)
+
+let assertGreaterOrEqual actual expected message =
+    match actual >= expected with
+    | true -> pass
+    | false -> failWith (sprintf ">= %A" expected) actual (sprintf "%s: not greater or equal" message)
+
+let assertLess actual expected message =
+    match actual < expected with
+    | true -> pass
+    | false -> failWith (sprintf "< %A" expected) actual (sprintf "%s: not less" message)
+
+let assertLessOrEqual actual expected message =
+    match actual <= expected with
+    | true -> pass
+    | false -> failWith (sprintf "<= %A" expected) actual (sprintf "%s: not less or equal" message)
+
+let assertInDelta expected actual delta message =
+    let toFloat x =
+        match box x with
+        | :? int as i -> Some(float i)
+        | :? int8 as i -> Some(float i)
+        | :? int16 as i -> Some(float i)
+        | :? int64 as i -> Some(float i)
+        | :? uint as i -> Some(float i)
+        | :? uint8 as i -> Some(float i)
+        | :? uint16 as i -> Some(float i)
+        | :? uint64 as i -> Some(float i)
+        | :? float32 as f -> Some(float f)
+        | :? float as f -> Some f
+        | :? decimal as d -> Some(float d)
+        | _ -> None
+
+    match toFloat expected, toFloat actual with
+    | Some e, Some a ->
+        let diff = abs (e - a)
+
+        match diff <= delta with
+        | true -> pass
+        | false -> fail (sprintf "%s: difference %A exceeds delta %A" message diff delta)
+    | _ -> fail (sprintf "%s: arguments must be numeric types" message)
+
+
+// Strings and Regex
+let assertRegexp pattern str message =
+    let regex = System.Text.RegularExpressions.Regex(pattern)
+
+    match regex.IsMatch(string str) with
+    | true -> pass
+    | false -> fail (sprintf "%s: '%A' doesn't match pattern '%s'" message str pattern)
+
+let assertNotRegexp pattern str message =
+    let regex = System.Text.RegularExpressions.Regex(pattern)
+
+    match regex.IsMatch(string str) with
+    | true -> fail (sprintf "%s: '%A' should not match pattern '%s'" message str pattern)
+    | false -> pass
 
 // Test builders
 let test name fn = { Name = name; Run = fn }
