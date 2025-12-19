@@ -2,11 +2,11 @@ module TestTracks
 
 (*
 
-  Railway-Oriented Testing Framework for F#
-  Pure FP, no mutable state, explicit composition
+    Railway-Oriented Testing Framework for F#
+    Pure FP, no mutable state, explicit composition
 
-  A purely functional testing framework using Railway-Oriented Programming principles.
-  Tests are composable functions that return Results, making error handling explicit.
+    A purely functional testing framework using Railway-Oriented Programming principles.
+    Tests are composable functions that return Results, making error handling explicit.
 
 *)
 

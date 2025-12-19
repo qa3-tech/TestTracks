@@ -14,7 +14,8 @@ A purely functional testing framework using Railway-Oriented Programming (ROP) p
 
 Reference the TestTracks DLL from your test project.
 
-Requirements: F# 4.1+ (.NET Framework 4.6.1+, .NET Core 2.0+, or any .NET 5+)
+Requirements: 
+- dotnet 8.0+
 
 ## Quick Start
 
@@ -24,7 +25,7 @@ Requirements: F# 4.1+ (.NET Framework 4.6.1+, .NET Core 2.0+, or any .NET 5+)
 // MyTests.fs
 module MyTests
 
-open TestTracks.TestTracks
+open TestTracks
 
 let mathTests = suite "Math Tests" [
     test "addition works" (fun () ->
@@ -49,7 +50,7 @@ let validationTests = suite "Validation Tests" [
 // Program.fs
 namespace MyProject.Tests
 
-open TestTracks.TestTracks
+open TestTracks
 open MyTests  // Your test modules
 
 module Program =
@@ -80,6 +81,343 @@ dotnet build
 # Run in parallel
 ./MyProject.Tests --parallel
 ```
+
+## Using TestTracks from C#
+
+TestTracks is primarily designed for F#, but includes a C# wrapper (`TestTracksCSharp`) that provides an idiomatic C# API. The core principles remain the same: tests are pure functions that return results.
+
+### API Mapping
+
+| F#                                         | C#                                                |
+| ------------------------------------------ | ------------------------------------------------- |
+| `test "name" (fun () -> ...)`              | `Tests.Create("name", () => ...)`                 |
+| `testSkip "name" "reason"`                 | `Tests.Skip("name", "reason")`                    |
+| `suite "name" [...]`                       | `Suites.Create("name", ...)`                      |
+| `suiteWith "name" setup teardown [...]`    | `Suites.CreateWith("name", setup, teardown, ...)` |
+| `assertEqual expected actual msg`          | `Asserts.Equal(expected, actual, msg)`            |
+| `assertTrue cond msg`                      | `Asserts.True(cond, msg)`                         |
+| `assertFalse cond msg`                     | `Asserts.False(cond, msg)`                        |
+| `assertSome opt msg`                       | `Asserts.Some(opt, msg)`                          |
+| `assertNone opt msg`                       | `Asserts.None(opt, msg)`                          |
+| `assertOk result msg`                      | `Asserts.Ok(result, msg)`                         |
+| `assertError result msg`                   | `Asserts.Error(result, msg)`                      |
+| `assertEmpty coll msg`                     | `Asserts.Empty(coll, msg)`                        |
+| `assertNotEmpty coll msg`                  | `Asserts.NotEmpty(coll, msg)`                     |
+| `assertLen len coll msg`                   | `Asserts.Len(len, coll, msg)`                     |
+| `assertContains elem coll msg`             | `Asserts.Contains(elem, coll, msg)`               |
+| `assertNotContains elem coll msg`          | `Asserts.NotContains(elem, coll, msg)`            |
+| `assertSubset sub coll msg`                | `Asserts.Subset(sub, coll, msg)`                  |
+| `assertNotSubset sub coll msg`             | `Asserts.NotSubset(sub, coll, msg)`               |
+| `assertElementsMatch a b msg`              | `Asserts.ElementsMatch(a, b, msg)`                |
+| `assertGreater actual expected msg`        | `Asserts.Greater(actual, expected, msg)`          |
+| `assertGreaterOrEqual actual expected msg` | `Asserts.GreaterOrEqual(actual, expected, msg)`   |
+| `assertLess actual expected msg`           | `Asserts.Less(actual, expected, msg)`             |
+| `assertLessOrEqual actual expected msg`    | `Asserts.LessOrEqual(actual, expected, msg)`      |
+| `assertInDelta expected actual delta msg`  | `Asserts.InDelta(expected, actual, delta, msg)`   |
+| `assertRegexp pattern str msg`             | `Asserts.Regexp(pattern, str, msg)`               |
+| `assertNotRegexp pattern str msg`          | `Asserts.NotRegexp(pattern, str, msg)`            |
+| `assertNil value msg`                      | `Asserts.Nil(value, msg)`                         |
+| `assertNotNil value msg`                   | `Asserts.NotNil(value, msg)`                      |
+| `combine r1 r2`                            | `Outcomes.And(r1, r2)`                            |
+| `r1 \|> combine r2 \|> combine r3`         | `Outcomes.All(r1, r2, r3)`                        |
+| `skipIf cond reason`                       | `Guards.When(cond, reason, () => ...)`            |
+| `skipUnless cond reason`                   | `Guards.Unless(cond, reason, () => ...)`          |
+
+### Quick C# Example
+
+```csharp
+using System;
+using TestTracksCSharp;
+
+namespace MyProject.Tests
+{
+    public static class MyTests
+    {
+        public static TestTracks.TestSuite BasicTests => Suites.Create("Basic Math",
+            Tests.Create("addition works", () =>
+                Asserts.Equal(4, 2 + 2, "two plus two")),
+
+            Tests.Create("multiplication works", () =>
+                Asserts.Equal(42, 6 * 7, "six times seven")),
+
+            Tests.Skip("division by zero", "not implemented yet")
+        );
+    }
+
+    class Program
+    {
+        static int Main(string[] args)
+        {
+            var allSuites = new[] { MyTests.BasicTests };
+            return Runners.ParseTestArgs(args, allSuites);
+        }
+    }
+}
+```
+
+### Key Differences from F#
+
+#### 1. No Computation Expression
+
+C# doesn't have F#'s `test'` computation expression. To compose dependent assertions (short-circuit on failure), nest them manually:
+
+**F# (with computation expression):**
+
+```fsharp
+test "dependent checks" (fun () -> test' {
+    do! assertTrue (x > 0) "must be positive"
+    do! assertTrue (x < 100) "must be under 100"
+    return! assertEqual 42 x "should be 42"
+})
+```
+
+**C# (manual composition):**
+
+```csharp
+Tests.Create("dependent checks", () =>
+{
+    var result = Asserts.True(x > 0, "must be positive");
+    if (Outcomes.IsFailed(result)) return result;
+
+    result = Asserts.True(x < 100, "must be under 100");
+    if (Outcomes.IsFailed(result)) return result;
+
+    return Asserts.Equal(42, x, "should be 42");
+})
+```
+
+For most cases, use `Outcomes.All()` to run all checks and accumulate errors:
+
+```csharp
+Tests.Create("validate order", () =>
+    Outcomes.All(
+        Asserts.True(order.Total > 0, "total positive"),
+        Asserts.True(order.Items.Count > 0, "has items"),
+        Asserts.True(order.CustomerId.HasValue, "has customer")
+    )
+)
+```
+
+#### 2. Use Records for Test Environments
+
+C# records work perfectly for test environments:
+
+```csharp
+public record TestEnv(string TempDir, DateTime StartTime);
+
+public static TestTracks.TestSuite FileTests => Suites.CreateWith(
+    "File Operations",
+    setup: () => new TestEnv(CreateTempDir(), DateTime.Now),
+    teardown: env => CleanupTempDir(env.TempDir),
+
+    env => Tests.Create("can write", () =>
+    {
+        var file = Path.Combine(env.TempDir, "test.txt");
+        File.WriteAllText(file, "hello");
+        return Asserts.True(File.Exists(file), "file exists");
+    }),
+
+    env => Tests.Create("can read", () =>
+    {
+        var file = Path.Combine(env.TempDir, "test.txt");
+        File.WriteAllText(file, "hello");
+        var content = File.ReadAllText(file);
+        return Asserts.Equal("hello", content, "reads content");
+    })
+);
+```
+
+#### 3. Variadic Arguments
+
+`Suites.Create()` and `Outcomes.All()` accept `params`, so you can pass any number of tests:
+
+```csharp
+Suites.Create("My Suite",
+    Tests.Create("test 1", () => ...),
+    Tests.Create("test 2", () => ...),
+    Tests.Create("test 3", () => ...)
+)
+
+Outcomes.All(
+    Asserts.Equal(1, x, "check 1"),
+    Asserts.Equal(2, y, "check 2"),
+    Asserts.Equal(3, z, "check 3")
+)
+```
+
+#### 4. Skip Guards
+
+Use `Guards.When` and `Guards.Unless` for conditional skips:
+
+```csharp
+Tests.Create("windows only", () =>
+    Guards.Unless(
+        RuntimeInformation.IsOSPlatform(OSPlatform.Windows),
+        "Windows only test",
+        () => Asserts.True(true, "test logic")
+    )
+)
+
+Tests.Create("skip in CI", () =>
+{
+    var isCI = Environment.GetEnvironmentVariable("CI") != null;
+    return Guards.When(
+        !isCI,
+        "too slow for CI",
+        () => Asserts.True(true, "test logic")
+    );
+})
+```
+
+### Complete C# Example
+
+```csharp
+using System;
+using System.IO;
+using TestTracksCSharp;
+
+namespace MyTests
+{
+    // Define your test environment
+    public record TestEnv(string TempDir, DateTime StartTime);
+
+    public static class Examples
+    {
+        // Suite with setup/teardown
+        public static TestTracks.TestSuite FileTests => Suites.CreateWith(
+            "File Operations",
+            setup: () =>
+            {
+                var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+                Directory.CreateDirectory(dir);
+                Console.WriteLine($"Created temp dir: {dir}");
+                return new TestEnv(dir, DateTime.Now);
+            },
+            teardown: env =>
+            {
+                Directory.Delete(env.TempDir, true);
+                Console.WriteLine("Cleaned up temp dir");
+            },
+            env => Tests.Create("can create file", () =>
+            {
+                var file = Path.Combine(env.TempDir, "test.txt");
+                File.WriteAllText(file, "hello");
+                return Asserts.True(File.Exists(file), "file should exist");
+            }),
+            env => Tests.Create("can read file", () =>
+            {
+                var file = Path.Combine(env.TempDir, "test.txt");
+                File.WriteAllText(file, "hello");
+                var content = File.ReadAllText(file);
+                return Asserts.Equal("hello", content, "should read content");
+            }),
+            env => Tests.Skip("performance test", "too slow")
+        );
+
+        // Simple suite without setup
+        public static TestTracks.TestSuite MathTests => Suites.Create("Math",
+            Tests.Create("addition", () =>
+                Asserts.Equal(4, 2 + 2, "should add")),
+
+            Tests.Create("composition", () =>
+                Outcomes.All(
+                    Asserts.True(2 > 0, "positive"),
+                    Asserts.False(2 < 0, "not negative")
+                ))
+        );
+    }
+
+    class Program
+    {
+        static int Main(string[] args)
+        {
+            var allSuites = new[] { Examples.FileTests, Examples.MathTests };
+            return Runners.ParseTestArgs(args, allSuites);
+        }
+    }
+}
+```
+
+### Data-Driven Tests in C#
+
+Use LINQ to generate tests from data:
+
+```csharp
+public static TestTracks.TestSuite DataDrivenTests
+{
+    get
+    {
+        var testCases = new[] { (2, 4), (5, 10), (10, 20), (0, 0), (-5, -10) };
+
+        var tests = testCases.Select(c =>
+            Tests.Create($"{c.Item1} * 2 = {c.Item2}", () =>
+                Asserts.Equal(c.Item2, c.Item1 * 2, "should double"))
+        );
+
+        return Suites.Create("Data-Driven Tests", tests.ToArray());
+    }
+}
+```
+
+### Accumulating vs Short-Circuiting
+
+**Accumulate all errors** (all assertions run):
+
+```csharp
+Tests.Create("validate order", () =>
+    Outcomes.All(
+        Asserts.True(order.Total > 0m, "total positive"),
+        Asserts.True(order.Items.Count > 0, "has items"),
+        Asserts.True(order.CustomerId.HasValue, "has customer")
+    )
+)
+// If all fail, you see ALL three errors
+```
+
+**Short-circuit on first failure** (stops at first error):
+
+```csharp
+Tests.Create("dependent checks", () =>
+{
+    var result = Asserts.Some(user, "user exists");
+    if (Outcomes.IsFailed(result)) return result;
+
+    // Only runs if user exists
+    return Asserts.Equal("alice", user.Value.Name, "name matches");
+})
+```
+
+### Running Tests
+
+```bash
+# Build
+dotnet build
+
+# Run all tests
+./MyProject.Tests
+
+# Run specific suite
+./MyProject.Tests --suite "File Operations"
+
+# Run in parallel
+./MyProject.Tests --parallel
+```
+
+### C# API Namespaces
+
+```csharp
+using TestTracksCSharp;  // Core wrapper types
+
+// Available static classes:
+Tests      // Create, Skip
+Suites     // Create, CreateWith
+Asserts    // Equal, True, False, Some, None, etc.
+Outcomes   // And, All, IsFailed, IsSkipped
+Guards     // When, Unless
+Runners    // ParseTestArgs, RunAll, RunAllParallel
+```
+
+See the full F# documentation below for detailed explanations of concepts like Railway-Oriented Programming, setup/teardown patterns, and best practices—all of which apply equally to C#.
 
 ## Core Concepts
 

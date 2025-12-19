@@ -2,19 +2,26 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
     <GenerateProgramFile>false</GenerateProgramFile>
     <OutputType>Exe</OutputType>
-    <AssemblyName>TestTracks.Tests</AssemblyName>
+    <AssemblyName>TestTracksCSharp.Tests</AssemblyName>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="../src/TestTracks.fsproj" />
   </ItemGroup>
+  
+  <ItemGroup>
+    <ProjectReference Include="../csharp/TestTracksCSharp.csproj" />
+  </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="Examples.fs" />
-    <Compile Include="Program.fs" />
+    <Compile Include="Examples.cs" />
+    <Compile Include="Program.cs" />
   </ItemGroup>
 
 </Project>

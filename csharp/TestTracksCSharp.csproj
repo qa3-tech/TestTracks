@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <AssemblyName>TestTracksCSharp</AssemblyName>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../src/TestTracks.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Assert.cs" />
+    <Compile Include="Build.cs" />
+    <Compile Include="Outcome.cs" />
+    <Compile Include="Run.cs" />
+  </ItemGroup>
+
+</Project>

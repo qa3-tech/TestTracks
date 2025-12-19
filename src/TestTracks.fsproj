@@ -7,8 +7,8 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <SelfContained>false</SelfContained>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
   </PropertyGroup>
-
 
   <ItemGroup>
     <Compile Include="Library.fs" />
