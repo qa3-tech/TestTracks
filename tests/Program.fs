@@ -1,6 +1,5 @@
 namespace TestTracks.Tests
 
-open System
 open TestTracks
 open Examples
 
@@ -17,12 +16,13 @@ module Program =
               additionTests
               validationTests
               failingTests
-              dependentTests 
+              dependentTests
               nilTests
               numericTests
               stringTests
               compositionTests
               edgeCaseTests
-              regexPatternTests]
+              regexPatternTests
+              junitTests ]
 
-        TestTracks.parseTestArgs args allSuites 
+        parseTestArgs args allSuites

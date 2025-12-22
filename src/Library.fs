@@ -374,11 +374,7 @@ let runAllSuites (suites: TestSuite list) : SuiteOutcome list = suites |> List.m
 
 // Parallel execution - each suite runs in parallel
 let runAllSuitesParallel (suites: TestSuite list) : SuiteOutcome list =
-    suites
-    |> List.map (fun s -> async { return runSuite s })
-    |> Async.Parallel
-    |> Async.RunSynchronously
-    |> Array.toList
+    suites |> Array.ofList |> Array.Parallel.map runSuite |> Array.toList
 
 // Filtering - run specific tests or suites
 let filterSuiteByName (suiteName: string) (suites: TestSuite list) : TestSuite list =
@@ -412,29 +408,49 @@ let runTestsMatching (pattern: string) (suites: TestSuite list) : SuiteOutcome l
 // Result formatting (pure)
 let formatError (err: TestError) : string =
     match err.Expected, err.Actual with
-    | Some exp, Some act -> sprintf "  ✗ %s\n    Expected: %A\n    Actual:   %A" err.Message exp act
-    | _ -> sprintf "  ✗ %s" err.Message
+    | Some exp, Some act -> sprintf "%2s%s\n%4sExpected: %A\n%4sActual:   %A" "" err.Message "" exp "" act
+    | _ -> sprintf "%2s%s" "" err.Message
 
 let formatDuration (ms: float) : string =
     if ms < 1.0 then sprintf "%.2fms" ms
     elif ms < 1000.0 then sprintf "%.0fms" ms
     else sprintf "%.2fs" (ms / 1000.0)
 
+// ANSI color support
+let supportsColor () =
+    not (System.Console.IsOutputRedirected || System.Console.IsErrorRedirected)
+
+let colorize colorCode text =
+    if supportsColor () then
+        sprintf "\u001b[%sm%s\u001b[0m" colorCode text
+    else
+        text
+
+let getSymbol outcome =
+    match outcome with
+    | Passed _ -> colorize "32" "✓" // green
+    | Failed _
+    | Errored _ -> colorize "31" "✕" // red
+    | Skipped _ -> colorize "90" "○" // gray
+
 let formatOutcome outcome =
     match outcome with
-    | Passed(name, duration) -> (sprintf "✓ %s (%s)" name (formatDuration duration), true)
+    | Passed(name, duration) -> sprintf "%s (%s)" name (formatDuration duration)
     | Failed(name, errs, duration) ->
         let errMsg = errs |> List.map formatError |> String.concat "\n"
-        (sprintf "✗ %s (%s)\n%s" name (formatDuration duration) errMsg, false)
-    | Skipped(name, reason) -> (sprintf "⊘ %s (skipped: %s)" name reason, true)
-    | Errored(name, ex, duration) ->
-        (sprintf "✗ %s (%s)\n  Exception: %s" name (formatDuration duration) ex.Message, false)
+        sprintf "%s (%s)\n%s" name (formatDuration duration) errMsg
+    | Skipped(name, reason) -> sprintf "%s (skipped: %s)" name reason
+    | Errored(name, ex, duration) -> sprintf "%s (%s)\n%2sException: %s" name (formatDuration duration) "" ex.Message
 
 let formatSuiteOutcome (so: SuiteOutcome) =
     let header =
         sprintf "\n=== %s (%s) ===" so.SuiteName (formatDuration so.TotalDurationMs)
 
-    let results = so.Results |> List.map (formatOutcome >> fst) |> String.concat "\n"
+    let results =
+        so.Results
+        |> List.map (fun r -> sprintf "%s %s" (getSymbol r) (formatOutcome r))
+        |> String.concat "\n"
+
     sprintf "%s\n%s" header results
 
 // Summary
@@ -498,8 +514,149 @@ let printResults outcomes =
 
     if allPassed then 0 else 1
 
+let summarizeJUnit (outcomes: SuiteOutcome list) : string =
+    let escapeXml (s: string) =
+        s
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;")
+            .Replace("\"", "&quot;")
+            .Replace("'", "&apos;")
+
+    let formatTime (ms: float) = sprintf "%.3f" (ms / 1000.0)
+
+    let testcaseXml (outcome: TestOutcome) =
+        match outcome with
+        | Passed(name, duration) ->
+            sprintf "      <testcase name=\"%s\" time=\"%s\"/>" (escapeXml name) (formatTime duration)
+        | Failed(name, errs, duration) ->
+            let msg = errs |> List.map (fun e -> e.Message) |> String.concat "; " |> escapeXml
+            let detail = errs |> List.map formatError |> String.concat "\n" |> escapeXml
+
+            sprintf
+                "      <testcase name=\"%s\" time=\"%s\">\n        <failure message=\"%s\" type=\"AssertionError\">%s</failure>\n      </testcase>"
+                (escapeXml name)
+                (formatTime duration)
+                msg
+                detail
+        | Skipped(name, reason) ->
+            sprintf
+                "      <testcase name=\"%s\" time=\"0\">\n        <skipped message=\"%s\"/>\n      </testcase>"
+                (escapeXml name)
+                (escapeXml reason)
+        | Errored(name, ex, duration) ->
+            sprintf
+                "      <testcase name=\"%s\" time=\"%s\">\n        <error message=\"%s\" type=\"%s\">%s</error>\n      </testcase>"
+                (escapeXml name)
+                (formatTime duration)
+                (escapeXml ex.Message)
+                (ex.GetType().Name)
+                (escapeXml (string ex))
+
+    let suiteXml (so: SuiteOutcome) =
+        let tests = so.Results.Length
+
+        let failures =
+            so.Results
+            |> List.filter (function
+                | Failed _ -> true
+                | _ -> false)
+            |> List.length
+
+        let errors =
+            so.Results
+            |> List.filter (function
+                | Errored _ -> true
+                | _ -> false)
+            |> List.length
+
+        let skipped =
+            so.Results
+            |> List.filter (function
+                | Skipped _ -> true
+                | _ -> false)
+            |> List.length
+
+        let cases = so.Results |> List.map testcaseXml |> String.concat "\n"
+
+        sprintf
+            "%4s<testsuite name=\"%s\" tests=\"%d\" failures=\"%d\" errors=\"%d\" skipped=\"%d\" time=\"%s\">\n%s\n%4s</testsuite>"
+            ""
+            (escapeXml so.SuiteName)
+            tests
+            failures
+            errors
+            skipped
+            (formatTime so.TotalDurationMs)
+            cases
+            ""
+
+    let allResults = outcomes |> List.collect (fun so -> so.Results)
+    let totalTests = allResults.Length
+
+    let totalFailures =
+        allResults
+        |> List.filter (function
+            | Failed _ -> true
+            | _ -> false)
+        |> List.length
+
+    let totalErrors =
+        allResults
+        |> List.filter (function
+            | Errored _ -> true
+            | _ -> false)
+        |> List.length
+
+    let totalSkipped =
+        allResults
+        |> List.filter (function
+            | Skipped _ -> true
+            | _ -> false)
+        |> List.length
+
+    let totalTime = outcomes |> List.sumBy (fun so -> so.TotalDurationMs)
+    let suites = outcomes |> List.map suiteXml |> String.concat "\n"
+
+    sprintf
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites tests=\"%d\" failures=\"%d\" errors=\"%d\" skipped=\"%d\" time=\"%s\">\n%s\n</testsuites>"
+        totalTests
+        totalFailures
+        totalErrors
+        totalSkipped
+        (formatTime totalTime)
+        suites
+
 
 let parseTestArgs (args: string array) (suites: TestSuite list) =
+
+    let xmlFile =
+        args
+        |> Array.tryFindIndex ((=) "--xml")
+        |> Option.bind (fun i -> Array.tryItem (i + 1) args)
+
+    let args =
+        match Array.tryFindIndex ((=) "--xml") args with
+        | Some i -> Array.removeAt (i + 1) args |> Array.removeAt i
+        | None -> args
+
+    let outputResults (outcomes: SuiteOutcome list) =
+        match xmlFile with
+        | Some file ->
+            System.IO.File.WriteAllText(file, summarizeJUnit outcomes)
+            printfn "Results written to %s" file
+
+            let allPassed =
+                outcomes
+                |> List.forall (fun so ->
+                    so.Results
+                    |> List.forall (function
+                        | Passed _
+                        | Skipped _ -> true
+                        | _ -> false))
+
+            if allPassed then 0 else 1
+        | None -> printResults outcomes
 
     let printHelp () =
         printfn "Usage:"
@@ -508,27 +665,26 @@ let parseTestArgs (args: string array) (suites: TestSuite list) =
         printfn "  --test <suite> <test>       Run specific test"
         printfn "  --match <pattern>           Run tests matching pattern"
         printfn "  --parallel                  Run all suites in parallel"
+        printfn "  --xml <file>                Output results as JUnit XML to file"
         printfn "  --help, -h                  Show this help"
         0
 
     match args with
     | [| "--help" |]
     | [| "-h" |] -> printHelp ()
-
     | [| "--suite"; suiteName |] ->
-        printfn "=== Running Suite: %s ===\n" suiteName
-        runSuiteByName suiteName suites |> printResults
-
+        printfn "=== Running Suite: %s ===" suiteName
+        runSuiteByName suiteName suites |> outputResults
     | [| "--test"; suiteName; testName |] ->
-        printfn "=== Running Test: %s -> %s ===\n" suiteName testName
-        runSingleTest suiteName testName suites |> printResults
-
+        printfn "=== Running Test: %s -> %s ===" suiteName testName
+        runSingleTest suiteName testName suites |> outputResults
     | [| "--match"; pattern |] ->
-        printfn "=== Running Tests Matching: %s ===\n" pattern
-        runTestsMatching pattern suites |> printResults
-
+        printfn "=== Running Tests Matching: %s ===" pattern
+        runTestsMatching pattern suites |> outputResults
     | [| "--parallel" |] ->
-        printfn "=== Running All Suites (Parallel) ===\n"
-        runAllSuitesParallel suites |> printResults
-
-    | _ -> runAllSuites suites |> printResults
+        printfn "=== Running All Suites (Parallel) ==="
+        runAllSuitesParallel suites |> outputResults
+    | [||] -> runAllSuites suites |> outputResults
+    | _ ->
+        printfn "Unknown arguments. Use --help for usage."
+        1

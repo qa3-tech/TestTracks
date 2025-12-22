@@ -6,8 +6,8 @@ using System.Collections.Generic;
 
 public class Program
 {
-    public static IEnumerable<TestTracks.TestSuite> AllSuites =>
-    [
+  public static IEnumerable<TestTracks.TestSuite> AllSuites =>
+  [
         Examples.BasicTests,
         Examples.FileLoggingTests,
         Examples.ComposedTests,
@@ -17,15 +17,18 @@ public class Program
         Examples.CollectionTests,
         Examples.NumericTests,
         Examples.StringTests,
-        Examples.DatabaseTests
-    ];
+        Examples.DatabaseTests,
+        Examples.JUnit
+  ];
 
-    public static int Main(string[] args)
-    {
-        Console.WriteLine("TestTracks C# Test Runner");
-        Console.WriteLine("=========================\n");
+  public static int Main(string[] args)
+  {
+    Console.WriteLine("TestTracks C# Test Runner");
+    Console.WriteLine("=========================\n");
 
-        var results = Runner.All(AllSuites);
-        return Printer.Print(results);
-    }
+    return TestTracks.parseTestArgs(
+        args,
+        Microsoft.FSharp.Collections.ListModule.OfSeq(AllSuites)
+    );
+  }
 }

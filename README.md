@@ -80,7 +80,19 @@ dotnet build
 
 # Run in parallel
 ./MyProject.Tests --parallel
+
+# Generate JUnit XML report
+./MyProject.Tests --xml results.xml
 ```
+
+## Terminal Output
+
+TestTracks provides colored output in modern terminals:
+- **✓ Pass** = Green
+- **✕ Fail/Error** = Red  
+- **○ Skip** = Gray
+
+Colors are automatically disabled when output is redirected (pipes, CI/CD logs), falling back to plain symbols for compatibility.
 
 ## Using TestTracks from C#
 
@@ -122,12 +134,14 @@ TestTracks is primarily designed for F#, but includes a C# wrapper (`TestTracksC
 | `r1 \|> combine r2 \|> combine r3`         | `Outcomes.All(r1, r2, r3)`                        |
 | `skipIf cond reason`                       | `Guards.When(cond, reason, () => ...)`            |
 | `skipUnless cond reason`                   | `Guards.Unless(cond, reason, () => ...)`          |
+| `parseTestArgs args suites`                | `TestTracks.parseTestArgs(args, ListModule.OfSeq(suites))` |
 
 ### Quick C# Example
 
 ```csharp
 using System;
 using TestTracksCSharp;
+using Microsoft.FSharp.Collections;
 
 namespace MyProject.Tests
 {
@@ -149,7 +163,10 @@ namespace MyProject.Tests
         static int Main(string[] args)
         {
             var allSuites = new[] { MyTests.BasicTests };
-            return Runners.ParseTestArgs(args, allSuites);
+            return TestTracks.parseTestArgs(
+                args,
+                ListModule.OfSeq(allSuites)
+            );
         }
     }
 }
@@ -275,6 +292,7 @@ Tests.Create("skip in CI", () =>
 using System;
 using System.IO;
 using TestTracksCSharp;
+using Microsoft.FSharp.Collections;
 
 namespace MyTests
 {
@@ -332,7 +350,10 @@ namespace MyTests
         static int Main(string[] args)
         {
             var allSuites = new[] { Examples.FileTests, Examples.MathTests };
-            return Runners.ParseTestArgs(args, allSuites);
+            return TestTracks.parseTestArgs(
+                args,
+                ListModule.OfSeq(allSuites)
+            );
         }
     }
 }
@@ -401,6 +422,9 @@ dotnet build
 
 # Run in parallel
 ./MyProject.Tests --parallel
+
+# Generate XML report
+./MyProject.Tests --xml results.xml
 ```
 
 ### C# API Namespaces
@@ -414,7 +438,8 @@ Suites     // Create, CreateWith
 Asserts    // Equal, True, False, Some, None, etc.
 Outcomes   // And, All, IsFailed, IsSkipped
 Guards     // When, Unless
-Runners    // ParseTestArgs, RunAll, RunAllParallel
+Printer    // Print, WriteJUnitXml
+Runner     // Suite, All, Parallel
 ```
 
 See the full F# documentation below for detailed explanations of concepts like Railway-Oriented Programming, setup/teardown patterns, and best practices—all of which apply equally to C#.
@@ -744,11 +769,11 @@ test "validate all properties" (fun () ->
 )
 
 // If all fail, you'll see ALL four errors:
-// ✗ validate all properties (2.31ms)
-//   ✗ total positive
-//   ✗ has items
-//   ✗ has customer
-//   ✗ is valid
+// ✕ validate all properties (2.31ms)
+//   total positive
+//   has items
+//   has customer
+//   is valid
 ```
 
 ### Pattern 4: Reading Test Data from Files
@@ -790,8 +815,8 @@ test "dependent checks" (fun () -> test' {
 })
 
 // Output if user not found:
-// ✗ dependent checks (1.2ms)
-//   ✗ user exists: expected Some, got None
+// ✕ dependent checks (1.2ms)
+//   user exists: expected Some, got None
 ```
 
 **Accumulate** (collect all failures):
@@ -804,10 +829,10 @@ test "independent checks" (fun () ->
 )
 
 // Output if all fail:
-// ✗ independent checks (1.5ms)
-//   ✗ user exists: expected Some, got None
-//   ✗ name matches: expected "alice", got "bob"
-//   ✗ age matches: expected 30, got 25
+// ✕ independent checks (1.5ms)
+//   user exists: expected Some, got None
+//   name matches: expected "alice", got "bob"
+//   age matches: expected 30, got 25
 ```
 
 **Key difference:**
@@ -855,6 +880,7 @@ runTestsMatching "database" allSuites  // Matches any test with "database" in na
 ./MyTests --test "Database Tests" "can query" # Run specific test
 ./MyTests --match "validation"                # Run tests matching pattern
 ./MyTests --parallel                          # Run in parallel
+./MyTests --xml results.xml                   # Generate JUnit XML report
 ```
 
 **When to use parallel:**
@@ -877,8 +903,8 @@ All test results include timing:
 === Database Tests (245.32ms) ===
 ✓ can query database (12.45ms)
 ✓ can write to file (3.21ms)
-✗ validation fails (189.03ms)
-  ✗ Expected: 42
+✕ validation fails (189.03ms)
+  Expected: 42
     Actual:   0
 
 15/18 passed, 2 failed, 1 skipped, 0 errored (Total: 1.23s)

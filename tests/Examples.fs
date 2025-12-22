@@ -473,3 +473,58 @@ module Examples =
                       match shouldMatch with
                       | true -> assertRegexp pattern input desc
                       | false -> assertNotRegexp pattern input desc) ]
+
+    // JUnit tests
+    let junitTests =
+        let mockOutcomes =
+            [ { SuiteName = "TestSuite"
+                TotalDurationMs = 100.0
+                Results =
+                  [ Passed("test1", 10.0)
+                    Failed(
+                        "test2",
+                        [ { Message = "expected 1"
+                            Expected = Some 1
+                            Actual = Some 2 } ],
+                        20.0
+                    )
+                    Skipped("test3", "not implemented") ] } ]
+
+        suite
+            "JUnitXml"
+            [ test "contains xml declaration" (fun () ->
+                  let xml = summarizeJUnit mockOutcomes
+                  assertContains "<?xml version" xml "should have xml declaration")
+
+              test "contains testsuites with counts" (fun () ->
+                  let xml = summarizeJUnit mockOutcomes
+
+                  test' {
+                      do! assertContains "tests=\"3\"" xml "should have test count"
+                      do! assertContains "failures=\"1\"" xml "should have failure count"
+                      do! assertContains "skipped=\"1\"" xml "should have skipped count"
+                  })
+
+              test "contains testcase elements" (fun () ->
+                  let xml = summarizeJUnit mockOutcomes
+
+                  test' {
+                      do! assertContains "<testcase name=\"test1\"" xml "should have passed test"
+                      do! assertContains "<failure message=" xml "should have failure element"
+                      do! assertContains "<skipped message=" xml "should have skipped element"
+                  })
+
+
+              test "writes to file" (fun () ->
+                  let path = Path.GetTempFileName()
+
+                  try
+                      File.WriteAllText(path, summarizeJUnit mockOutcomes)
+                      let content = System.IO.File.ReadAllText(path)
+
+                      test' {
+                          do! assertNotEmpty content "file should have content"
+                          do! assertContains "<testsuites" content "should be valid junit xml"
+                      }
+                  finally
+                      File.Delete(path)) ]
