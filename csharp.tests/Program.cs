@@ -26,9 +26,6 @@ public class Program
     Console.WriteLine("TestTracks C# Test Runner");
     Console.WriteLine("=========================\n");
 
-    return TestTracks.parseTestArgs(
-        args,
-        Microsoft.FSharp.Collections.ListModule.OfSeq(AllSuites)
-    );
+    return Cli.Run(args, AllSuites);
   }
 }

@@ -14,8 +14,9 @@ A purely functional testing framework using Railway-Oriented Programming (ROP) p
 
 Reference the TestTracks DLL from your test project.
 
-Requirements: 
-- dotnet 8.0+
+Requirements:
+
+- .NET 10.0+
 
 ## Quick Start
 
@@ -82,14 +83,15 @@ dotnet build
 ./MyProject.Tests --parallel
 
 # Generate JUnit XML report
-./MyProject.Tests --xml results.xml
+./MyProject.Tests --junit results.xml
 ```
 
 ## Terminal Output
 
 TestTracks provides colored output in modern terminals:
+
 - **✓ Pass** = Green
-- **✕ Fail/Error** = Red  
+- **✕ Fail/Error** = Red
 - **○ Skip** = Gray
 
 Colors are automatically disabled when output is redirected (pipes, CI/CD logs), falling back to plain symbols for compatibility.
@@ -134,7 +136,7 @@ TestTracks is primarily designed for F#, but includes a C# wrapper (`TestTracksC
 | `r1 \|> combine r2 \|> combine r3`         | `Outcomes.All(r1, r2, r3)`                        |
 | `skipIf cond reason`                       | `Guards.When(cond, reason, () => ...)`            |
 | `skipUnless cond reason`                   | `Guards.Unless(cond, reason, () => ...)`          |
-| `parseTestArgs args suites`                | `TestTracks.parseTestArgs(args, ListModule.OfSeq(suites))` |
+| `parseTestArgs args suites`                | `Cli.Run(args, suites)`                           |
 
 ### Quick C# Example
 
@@ -163,10 +165,7 @@ namespace MyProject.Tests
         static int Main(string[] args)
         {
             var allSuites = new[] { MyTests.BasicTests };
-            return TestTracks.parseTestArgs(
-                args,
-                ListModule.OfSeq(allSuites)
-            );
+            return Cli.Run(args, allSuites);
         }
     }
 }
@@ -350,10 +349,7 @@ namespace MyTests
         static int Main(string[] args)
         {
             var allSuites = new[] { Examples.FileTests, Examples.MathTests };
-            return TestTracks.parseTestArgs(
-                args,
-                ListModule.OfSeq(allSuites)
-            );
+            return Cli.Run(args, allSuites);
         }
     }
 }
@@ -424,7 +420,7 @@ dotnet build
 ./MyProject.Tests --parallel
 
 # Generate XML report
-./MyProject.Tests --xml results.xml
+./MyProject.Tests --junit results.xml
 ```
 
 ### C# API Namespaces
@@ -438,8 +434,9 @@ Suites     // Create, CreateWith
 Asserts    // Equal, True, False, Some, None, etc.
 Outcomes   // And, All, IsFailed, IsSkipped
 Guards     // When, Unless
-Printer    // Print, WriteJUnitXml
+Printer    // Print, ToJUnitXml, WriteJUnitXml (same output as F#)
 Runner     // Suite, All, Parallel
+Cli        // Run (full command line, same flags as F#)
 ```
 
 See the full F# documentation below for detailed explanations of concepts like Railway-Oriented Programming, setup/teardown patterns, and best practices—all of which apply equally to C#.
@@ -634,10 +631,13 @@ let myTests = suiteWith "Database Tests"
 
 **Key Points:**
 
-- Buildup runs **once** and returns a value of any type
+- Buildup runs **once**, when the suite runs, and returns a value of any type
+- Buildup never runs when `--suite` or `--test` names another suite. `--match` must run it to learn the test names
+- With `--parallel`, buildup runs on the suite's own thread
 - All tests receive this **same value** as a parameter
 - Tests run **sequentially** in array order
-- Teardown runs **once** at the end with the same value
+- Teardown runs **once** at the end with the same value, whenever buildup ran
+- Buildup cannot fail: an exception there stops the run
 
 ### Without Setup/Teardown
 
@@ -735,13 +735,13 @@ let userTests = suiteWith "User Validation"
     )
     (fun env -> ())
     [
-        // Individual test for each valid user
-        fun env -> suite "Valid Users" [
-            for user in env.ValidUsers do
-                test (sprintf "validates %s" user.Name) (fun () ->
-                    assertTrue (validateUser user) "should be valid"
-                )
-        ] |> fun s -> s.Tests.Head
+        // One test that checks every valid user and collects errors
+        fun env ->
+            test "all valid users pass" (fun () ->
+                env.ValidUsers
+                |> List.map (fun user -> assertTrue (validateUser user) (sprintf "%s should be valid" user.Name))
+                |> List.reduce combine
+            )
 
         // Single test that runs all cases and collects errors
         fun env -> test "all invalid users rejected" (fun () ->
@@ -779,28 +779,20 @@ test "validate all properties" (fun () ->
 ### Pattern 4: Reading Test Data from Files
 
 ```fsharp
-let fileBasedTests = suiteWith "CSV Tests"
-    (fun () ->
-        let csv = File.ReadAllLines("testdata.csv")
-        let cases =
-            csv
-            |> Array.skip 1  // Skip header
-            |> Array.map (fun line ->
-                let parts = line.Split(',')
-                (int parts.[0], int parts.[1], int parts.[2])
-            )
-            |> Array.toList
-        { TestCases = cases }
-    )
-    (fun env -> ())
-    [
-        fun env -> suite "CSV Cases" [
-            for (a, b, expected) in env.TestCases do
-                test (sprintf "%d + %d = %d" a b expected) (fun () ->
-                    assertEqual expected (a + b) "should add"
-                )
-        ] |> fun s -> s.Tests.Head
-    ]
+// Test names come from the data, so read it when the suite list is built
+let csvCases =
+    File.ReadAllLines("testdata.csv")
+    |> Array.skip 1  // Skip header
+    |> Array.map (fun line -> line.Split(','))
+    |> Array.map (fun parts -> {| Left = int parts.[0]; Right = int parts.[1]; Sum = int parts.[2] |})
+    |> Array.toList
+
+let fileBasedTests = suite "CSV Tests" [
+    for case in csvCases do
+        test (sprintf "%d + %d = %d" case.Left case.Right case.Sum) (fun () ->
+            assertEqual case.Sum (case.Left + case.Right) "should add"
+        )
+]
 ```
 
 ### Short-Circuit vs Accumulate Errors
@@ -839,6 +831,7 @@ test "independent checks" (fun () ->
 
 - `test'` with `let!` stops at first error (good for dependent checks)
 - `combine` evaluates everything and merges errors (good for independent checks)
+- In `combine`, Fail outranks Skip and Skip outranks Pass, so a skip never hides a failure
 
 ## Parallel vs Sequential Execution
 
@@ -852,7 +845,7 @@ let results = runAllSuites [suite1; suite2; suite3]
 
 ### Parallel
 
-Each suite runs in parallel (tests within a suite are still sequential):
+Each suite runs in parallel, buildup included (tests within a suite are still sequential):
 
 ```fsharp
 let results = runAllSuitesParallel [suite1; suite2; suite3]
@@ -880,8 +873,11 @@ runTestsMatching "database" allSuites  // Matches any test with "database" in na
 ./MyTests --test "Database Tests" "can query" # Run specific test
 ./MyTests --match "validation"                # Run tests matching pattern
 ./MyTests --parallel                          # Run in parallel
-./MyTests --xml results.xml                   # Generate JUnit XML report
+./MyTests --junit results.xml                 # Generate JUnit XML report (alias: --xml)
+./MyTests --slow 250                          # Mark tests slower than 250 ms
 ```
+
+Flags combine in any order: `--parallel --suite "Database Tests" --junit results.xml` works. Suites with no selected tests are left out of the output.
 
 **When to use parallel:**
 
@@ -1168,6 +1164,13 @@ For most test code, `combine` (parallel assertions) and `bind` (sequential, depe
 - `runSingleTest: string -> string -> TestSuite list -> SuiteOutcome list` (run one test)
 - `runTestsMatching: string -> TestSuite list -> SuiteOutcome list` (pattern match)
 - `printResults: SuiteOutcome list -> int` (returns exit code)
+- `runSuites: Clock -> Filter -> TestSuite list -> SuiteOutcome list` (sequential, filtered)
+- `runSuitesParallel: Clock -> Filter -> TestSuite list -> SuiteOutcome list` (parallel, filtered)
+- `systemClock: Clock` (monotonic milliseconds; pass your own `unit -> float` for deterministic timing)
+- `Filter`: `Filter.All`, `Filter.Suite name`, `Filter.Test(suite, test)`, `Filter.Match pattern`
+- `parseArgs: string array -> Command` (pure argument parsing)
+- `count: SuiteOutcome list -> Counts` (passed, failed, skipped, errored, duration)
+- `summarizeJUnit: SuiteOutcome list -> string` (JUnit XML; invalid control characters become U+FFFD)
 
 ### Filtering
 

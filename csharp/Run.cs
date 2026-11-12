@@ -33,97 +33,46 @@ public static class Runner
 }
 
 /// <summary>
-/// Result formatting and printing functions
+/// Command line entry point: <c>return Cli.Run(args, suites);</c>
+/// </summary>
+public static class Cli
+{
+  public static int Run(string[] args, IEnumerable<TestTracks.TestSuite> suites) =>
+      TestTracks.parseTestArgs(args, ListModule.OfSeq(suites));
+}
+
+/// <summary>
+/// Result formatting and printing. Delegates to the F# formatters so both share one output format.
 /// </summary>
 public static class Printer
 {
-  public static int Print(IReadOnlyList<SuiteResult> results)
-  {
-    foreach (var suite in results)
-    {
-      Console.WriteLine($"\n=== {suite.Name} ({FormatDuration(suite.TotalDurationMs)}) ===");
-      foreach (var test in suite.Results)
-      {
-        Console.WriteLine($"{GetSymbol(test.Kind)} {FormatTest(test)}");
-      }
-    }
+  public static int Print(IReadOnlyList<SuiteResult> results) =>
+      TestTracks.printResults(ToFSharp(results));
 
-    var total = results.Sum(s => s.Results.Count);
-    var passed = results.Sum(SuiteResults.Passed);
-    var failed = results.Sum(SuiteResults.Failed);
-    var skipped = results.Sum(SuiteResults.Skipped);
-    var errored = results.Sum(SuiteResults.Errored);
-    var totalTime = results.Sum(s => s.TotalDurationMs);
-
-    Console.WriteLine($"\n{passed}/{total} passed, {failed} failed, {skipped} skipped, {errored} errored (Total: {FormatDuration(totalTime)})");
-
-    return failed + errored == 0 ? 0 : 1;
-  }
-
-  private static bool SupportsColor() =>
-      !Console.IsOutputRedirected && !Console.IsErrorRedirected;
-
-  private static string Colorize(string text, string ansiCode) =>
-      SupportsColor() ? $"\u001b[{ansiCode}m{text}\u001b[0m" : text;
-
-  public static string GetSymbol(TestOutcomeKind kind) => kind switch
-  {
-    TestOutcomeKind.Passed => Colorize("✓", "32"),   // green
-    TestOutcomeKind.Failed => Colorize("✕", "31"),   // red
-    TestOutcomeKind.Errored => Colorize("✕", "31"),  // red
-    TestOutcomeKind.Skipped => Colorize("○", "90"),  // gray
-    _ => "?"
-  };
-
-  public static string FormatDuration(double ms) => ms switch
-  {
-    < 1 => $"{ms:F2}ms",
-    < 1000 => $"{ms:F0}ms",
-    _ => $"{ms / 1000:F2}s"
-  };
-
-  public static string FormatTest(TestOutcomeResult t) => t.Kind switch
-  {
-    TestOutcomeKind.Passed => $"{t.Name} ({FormatDuration(t.DurationMs)})",
-    TestOutcomeKind.Skipped => $"{t.Name} (skipped: {t.SkipReason})",
-    TestOutcomeKind.Errored => $"{t.Name} ({FormatDuration(t.DurationMs)})\n  Exception: {t.Exception?.Message}",
-    TestOutcomeKind.Failed => $"{t.Name} ({FormatDuration(t.DurationMs)})\n{FormatErrors(t.Errors)}",
-    _ => $"{t.Name}"
-  };
-
-  public static string FormatErrors(IReadOnlyList<TestError> errors) =>
-      string.Join("\n", errors.Select(e =>
-          e.Expected is not null && e.Actual is not null
-              ? $"  ✗ {e.Message}\n    Expected: {e.Expected}\n    Actual:   {e.Actual}"
-              : $"  ✗ {e.Message}"
-      ));
+  public static string FormatDuration(double ms) => TestTracks.formatDuration(ms);
 
   public static string ToJUnitXml(IReadOnlyList<SuiteResult> results) =>
-      TestTracks.summarizeJUnit(
-          ListModule.OfSeq(results.Select(r => new TestTracks.SuiteOutcome(
-              r.Name,
-              ListModule.OfSeq(r.Results.Select(ToFSharpOutcome)),
-              r.TotalDurationMs
-          )))
-      );
+      TestTracks.summarizeJUnit(ToFSharp(results));
 
   public static void WriteJUnitXml(IReadOnlyList<SuiteResult> results, string filePath) =>
       System.IO.File.WriteAllText(filePath, ToJUnitXml(results));
+
+  private static FSharpList<TestTracks.SuiteOutcome> ToFSharp(IReadOnlyList<SuiteResult> results) =>
+      ListModule.OfSeq(results.Select(r => new TestTracks.SuiteOutcome(
+          r.Name,
+          ListModule.OfSeq(r.Results.Select(ToFSharpOutcome)),
+          r.TotalDurationMs
+      )));
 
   private static TestTracks.TestOutcome ToFSharpOutcome(TestOutcomeResult r) => r.Kind switch
   {
     TestOutcomeKind.Passed => TestTracks.TestOutcome.NewPassed(r.Name, r.DurationMs),
     TestOutcomeKind.Skipped => TestTracks.TestOutcome.NewSkipped(r.Name, r.SkipReason ?? ""),
-    TestOutcomeKind.Errored => TestTracks.TestOutcome.NewErrored(r.Name, r.Exception!, r.DurationMs),
     TestOutcomeKind.Failed => TestTracks.TestOutcome.NewFailed(
         r.Name,
-        ListModule.OfSeq(r.Errors.Select(e => new TestTracks.TestError(
-            e.Message,
-            e.Expected is not null ? FSharpOption<object>.Some(e.Expected) : FSharpOption<object>.None,
-            e.Actual is not null ? FSharpOption<object>.Some(e.Actual) : FSharpOption<object>.None
-        ))),
+        ListModule.OfSeq(r.Errors.Select(Outcomes.ToFSharpError)),
         r.DurationMs
     ),
-    _ => TestTracks.TestOutcome.NewErrored(r.Name, new Exception("Unknown"), 0)
+    _ => TestTracks.TestOutcome.NewErrored(r.Name, r.Exception ?? new Exception("Unknown"), r.DurationMs)
   };
 }

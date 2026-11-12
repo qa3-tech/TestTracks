@@ -12,21 +12,11 @@ using Microsoft.FSharp.Collections;
 /// </summary>
 public static class Tests
 {
-    public static TestTracks.Test Create(string name, Func<Outcome> run) =>
-        TestTracks.test(name, FuncConvert.FromFunc(() =>
-        {
-            var o = run();
-            return o.Kind switch
-            {
-                OutcomeKind.Passed => TestTracks.pass,
-                OutcomeKind.Skipped => TestTracks.skip<Unit>(o.SkipReason ?? ""),
-                OutcomeKind.Failed => TestTracks.fail<Unit>(o.Errors.FirstOrDefault().Message ?? "failed"),
-                _ => TestTracks.fail<Unit>("unknown")
-            };
-        }));
+  public static TestTracks.Test Create(string name, Func<Outcome> run) =>
+      TestTracks.test(name, FuncConvert.FromFunc(() => Outcomes.ToFSharp(run())));
 
-    public static TestTracks.Test Skip(string name, string reason) =>
-        TestTracks.testSkip(name, reason);
+  public static TestTracks.Test Skip(string name, string reason) =>
+      TestTracks.testSkip(name, reason);
 }
 
 /// <summary>
@@ -34,27 +24,27 @@ public static class Tests
 /// </summary>
 public static class Suites
 {
-    public static TestTracks.TestSuite Create(string name, IEnumerable<TestTracks.Test> tests) =>
-        TestTracks.suite(name, ListModule.OfSeq(tests));
+  public static TestTracks.TestSuite Create(string name, IEnumerable<TestTracks.Test> tests) =>
+      TestTracks.suite(name, ListModule.OfSeq(tests));
 
-    public static TestTracks.TestSuite Create(string name, params TestTracks.Test[] tests) =>
-        Create(name, tests.AsEnumerable());
+  public static TestTracks.TestSuite Create(string name, params TestTracks.Test[] tests) =>
+      Create(name, tests.AsEnumerable());
 
-    public static TestTracks.TestSuite CreateWith<TEnv>(
-        string name,
-        Func<TEnv> setup,
-        Action<TEnv> teardown,
-        params Func<TEnv, TestTracks.Test>[] tests)
-    {
-        var fsharpTests = tests
-            .Select(t => FuncConvert.FromFunc<TEnv, TestTracks.Test>(env => t(env)))
-            .ToList();
+  public static TestTracks.TestSuite CreateWith<TEnv>(
+      string name,
+      Func<TEnv> setup,
+      Action<TEnv> teardown,
+      params Func<TEnv, TestTracks.Test>[] tests)
+  {
+    var fsharpTests = tests
+        .Select(t => FuncConvert.FromFunc<TEnv, TestTracks.Test>(env => t(env)))
+        .ToList();
 
-        return TestTracks.suiteWith(
-            name,
-            FuncConvert.FromFunc(setup),
-            FuncConvert.FromAction(teardown),
-            ListModule.OfSeq(fsharpTests)
-        );
-    }
+    return TestTracks.suiteWith(
+        name,
+        FuncConvert.FromFunc(setup),
+        FuncConvert.FromAction(teardown),
+        ListModule.OfSeq(fsharpTests)
+    );
+  }
 }

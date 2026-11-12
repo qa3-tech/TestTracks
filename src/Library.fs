@@ -28,10 +28,26 @@ type Test =
     { Name: string
       Run: unit -> TestResult<unit> }
 
+/// Tests and teardown, available once setup has run.
+type LoadedSuite =
+    { Tests: Test list
+      Teardown: unit -> unit }
+
+/// Load runs setup lazily, inside the suite's run, so it runs on the suite's
+/// thread and never runs when a filter excludes the suite by name.
 type TestSuite =
     { Name: string
-      Tests: Test list
-      Teardown: (unit -> unit) option }
+      Load: unit -> LoadedSuite }
+
+/// Milliseconds on a monotonic clock. Injected so timing stays at the edge.
+type Clock = unit -> float
+
+[<RequireQualifiedAccess>]
+type Filter =
+    | All
+    | Suite of suiteName: string
+    | Test of suiteName: string * testName: string
+    | Match of pattern: string
 
 // Core test result builders
 let pass = Pass()
@@ -63,15 +79,15 @@ let map f result =
     | Fail e -> Fail e
     | Skip r -> Skip r
 
-/// Combine results, accumulating errors (skip takes precedence)
-let combine r1 r2 =
-    match r1, r2 with
-    | Skip r, _
-    | _, Skip r -> Skip r
+/// Combine results, accumulating errors. Fail outranks Skip; Skip outranks Pass.
+let combine first second =
+    match first, second with
+    | Fail firstErrors, Fail secondErrors -> Fail(firstErrors @ secondErrors)
+    | Fail errors, _
+    | _, Fail errors -> Fail errors
+    | Skip reason, _
+    | _, Skip reason -> Skip reason
     | Pass _, Pass _ -> Pass()
-    | Fail e1, Pass _ -> Fail e1
-    | Pass _, Fail e2 -> Fail e2
-    | Fail e1, Fail e2 -> Fail(e1 @ e2)
 
 // Skip conditions (pure functions)
 let skipIf condition reason =
@@ -282,19 +298,28 @@ let assertInDelta expected actual delta message =
 
 
 // Strings and Regex
-let assertRegexp pattern str message =
-    let regex = System.Text.RegularExpressions.Regex(pattern)
+/// An invalid pattern becomes an error value instead of an exception.
+let private parseRegex (pattern: string) =
+    try
+        Ok(System.Text.RegularExpressions.Regex(pattern))
+    with :? System.ArgumentException as error ->
+        Error error.Message
 
-    match regex.IsMatch(string str) with
-    | true -> pass
-    | false -> fail (sprintf "%s: '%A' doesn't match pattern '%s'" message str pattern)
+let assertRegexp pattern str message =
+    let text = string str
+
+    match parseRegex pattern with
+    | Ok regex when regex.IsMatch(text) -> pass
+    | Ok _ -> fail (sprintf "%s: '%s' doesn't match pattern '%s'" message text pattern)
+    | Error reason -> fail (sprintf "%s: invalid pattern '%s': %s" message pattern reason)
 
 let assertNotRegexp pattern str message =
-    let regex = System.Text.RegularExpressions.Regex(pattern)
+    let text = string str
 
-    match regex.IsMatch(string str) with
-    | true -> fail (sprintf "%s: '%A' should not match pattern '%s'" message str pattern)
-    | false -> pass
+    match parseRegex pattern with
+    | Ok regex when regex.IsMatch(text) -> fail (sprintf "%s: '%s' should not match pattern '%s'" message text pattern)
+    | Ok _ -> pass
+    | Error reason -> fail (sprintf "%s: invalid pattern '%s': %s" message pattern reason)
 
 // Test builders
 let test name fn = { Name = name; Run = fn }
@@ -305,19 +330,20 @@ let testSkip name reason =
 
 let suite name tests =
     { Name = name
-      Tests = tests
-      Teardown = None }
+      Load = fun () -> { Tests = tests; Teardown = ignore } }
 
 /// Suite with buildup/teardown
-/// buildup: unit -> 'env - Creates environment once
-/// teardown: 'env -> unit - Cleans up environment once
+/// buildup: unit -> 'env - Creates environment once, when the suite runs
+/// teardown: 'env -> unit - Cleans up environment once, after the last test
 /// tests: ('env -> Test) list - Each test receives the environment
 let suiteWith name buildup teardown tests =
-    let env = buildup ()
-
     { Name = name
-      Tests = tests |> List.map (fun testBuilder -> testBuilder env)
-      Teardown = Some(fun () -> teardown env) }
+      Load =
+        fun () ->
+            let env = buildup ()
+
+            { Tests = tests |> List.map (fun testBuilder -> testBuilder env)
+              Teardown = fun () -> teardown env } }
 
 // Computation expression for test composition
 type TestBuilder() =
@@ -343,67 +369,129 @@ type SuiteOutcome =
       Results: TestOutcome list
       TotalDurationMs: float }
 
-let runTest (t: Test) : TestOutcome =
-    let sw = System.Diagnostics.Stopwatch.StartNew()
+/// Real monotonic clock in milliseconds.
+let systemClock: Clock =
+    fun () -> float (System.Diagnostics.Stopwatch.GetTimestamp()) * 1000.0 / float System.Diagnostics.Stopwatch.Frequency
+
+let runTest (clock: Clock) (t: Test) : TestOutcome =
+    let start = clock ()
 
     try
         match t.Run() with
-        | Pass _ ->
-            sw.Stop()
-            Passed(t.Name, sw.Elapsed.TotalMilliseconds)
-        | Fail errs ->
-            sw.Stop()
-            Failed(t.Name, errs, sw.Elapsed.TotalMilliseconds)
+        | Pass _ -> Passed(t.Name, clock () - start)
+        | Fail errors -> Failed(t.Name, errors, clock () - start)
         | Skip reason -> Skipped(t.Name, reason)
     with ex ->
-        sw.Stop()
-        Errored(t.Name, ex, sw.Elapsed.TotalMilliseconds)
+        Errored(t.Name, ex, clock () - start)
 
-let runSuite (s: TestSuite) : SuiteOutcome =
-    let sw = System.Diagnostics.Stopwatch.StartNew()
-    let results = s.Tests |> List.map runTest
-    s.Teardown |> Option.iter (fun td -> td ())
-    sw.Stop()
+let private selected (filter: Filter) (suiteName: string) (testName: string) =
+    match filter with
+    | Filter.All -> true
+    | Filter.Suite name -> name = suiteName
+    | Filter.Test(wantedSuite, wantedTest) -> wantedSuite = suiteName && wantedTest = testName
+    | Filter.Match pattern -> testName.Contains(pattern)
+
+/// False when the filter excludes the suite by name, so setup can be skipped.
+let private mayContainSelected (filter: Filter) (suiteName: string) =
+    match filter with
+    | Filter.Suite name
+    | Filter.Test(name, _) -> name = suiteName
+    | Filter.All
+    | Filter.Match _ -> true
+
+/// Runs the suite's selected tests in order. Setup runs only when the filter
+/// may select a test in this suite; teardown runs whenever setup ran.
+let runSuiteWith (clock: Clock) (filter: Filter) (s: TestSuite) : SuiteOutcome =
+    let start = clock ()
+
+    let results =
+        if mayContainSelected filter s.Name then
+            let loaded = s.Load()
+
+            let outcomes =
+                loaded.Tests
+                |> List.filter (fun t -> selected filter s.Name t.Name)
+                |> List.map (runTest clock)
+
+            loaded.Teardown()
+            outcomes
+        else
+            []
 
     { SuiteName = s.Name
       Results = results
-      TotalDurationMs = sw.Elapsed.TotalMilliseconds }
+      TotalDurationMs = clock () - start }
+
+let private hasResults (outcome: SuiteOutcome) = not (List.isEmpty outcome.Results)
+
+/// Suites with no selected tests are left out of the outcome.
+let runSuites (clock: Clock) (filter: Filter) (suites: TestSuite list) : SuiteOutcome list =
+    suites |> List.map (runSuiteWith clock filter) |> List.filter hasResults
+
+/// Each suite runs on its own thread, setup included; tests within a suite stay sequential.
+let runSuitesParallel (clock: Clock) (filter: Filter) (suites: TestSuite list) : SuiteOutcome list =
+    suites
+    |> Array.ofList
+    |> Array.Parallel.map (runSuiteWith clock filter)
+    |> Array.toList
+    |> List.filter hasResults
+
+let runSuite (s: TestSuite) : SuiteOutcome = runSuiteWith systemClock Filter.All s
 
 // Sequential execution
-let runAllSuites (suites: TestSuite list) : SuiteOutcome list = suites |> List.map runSuite
+let runAllSuites (suites: TestSuite list) : SuiteOutcome list = runSuites systemClock Filter.All suites
 
 // Parallel execution - each suite runs in parallel
 let runAllSuitesParallel (suites: TestSuite list) : SuiteOutcome list =
-    suites |> Array.ofList |> Array.Parallel.map runSuite |> Array.toList
+    runSuitesParallel systemClock Filter.All suites
 
 // Filtering - run specific tests or suites
 let filterSuiteByName (suiteName: string) (suites: TestSuite list) : TestSuite list =
     suites |> List.filter (fun s -> s.Name = suiteName)
 
-let filterTestByName (testName: string) (suite: TestSuite) : TestSuite =
-    { suite with
-        Tests = suite.Tests |> List.filter (fun t -> t.Name = testName) }
+let filterTests (predicate: Test -> bool) (s: TestSuite) : TestSuite =
+    { s with
+        Load =
+            fun () ->
+                let loaded = s.Load()
 
-let filterTests (predicate: Test -> bool) (suite: TestSuite) : TestSuite =
-    { suite with
-        Tests = suite.Tests |> List.filter predicate }
+                { loaded with
+                    Tests = loaded.Tests |> List.filter predicate } }
+
+let filterTestByName (testName: string) (s: TestSuite) : TestSuite =
+    filterTests (fun t -> t.Name = testName) s
 
 // Run a single suite by name
 let runSuiteByName (name: string) (suites: TestSuite list) : SuiteOutcome list =
-    suites |> filterSuiteByName name |> runAllSuites
+    runSuites systemClock (Filter.Suite name) suites
 
 // Run a single test from a suite
 let runSingleTest (suiteName: string) (testName: string) (suites: TestSuite list) : SuiteOutcome list =
-    suites
-    |> filterSuiteByName suiteName
-    |> List.map (filterTestByName testName)
-    |> runAllSuites
+    runSuites systemClock (Filter.Test(suiteName, testName)) suites
 
 // Run tests matching a pattern
 let runTestsMatching (pattern: string) (suites: TestSuite list) : SuiteOutcome list =
-    suites
-    |> List.map (filterTests (fun t -> t.Name.Contains(pattern)))
-    |> runAllSuites
+    runSuites systemClock (Filter.Match pattern) suites
+
+// Counting (pure)
+type Counts =
+    { Passed: int
+      Failed: int
+      Skipped: int
+      Errored: int
+      DurationMs: float }
+
+let count (outcomes: SuiteOutcome list) : Counts =
+    let results = outcomes |> List.collect (fun so -> so.Results)
+    let countWhere predicate = results |> List.filter predicate |> List.length
+
+    { Passed = countWhere (fun outcome -> outcome.IsPassed)
+      Failed = countWhere (fun outcome -> outcome.IsFailed)
+      Skipped = countWhere (fun outcome -> outcome.IsSkipped)
+      Errored = countWhere (fun outcome -> outcome.IsErrored)
+      DurationMs = outcomes |> List.sumBy (fun so -> so.TotalDurationMs) }
+
+let exitCode (counts: Counts) = if counts.Failed + counts.Errored = 0 then 0 else 1
 
 // Result formatting (pure)
 let formatError (err: TestError) : string =
@@ -416,113 +504,116 @@ let formatDuration (ms: float) : string =
     elif ms < 1000.0 then sprintf "%.0fms" ms
     else sprintf "%.2fs" (ms / 1000.0)
 
+/// True when a test that ran took longer than the threshold.
+let isSlow (slowMs: float option) (outcome: TestOutcome) =
+    match slowMs, outcome with
+    | None, _
+    | _, Skipped _ -> false
+    | Some threshold, (Passed(_, durationMs) | Failed(_, _, durationMs) | Errored(_, _, durationMs)) ->
+        durationMs > threshold
+
 // ANSI color support
 let supportsColor () =
     not (System.Console.IsOutputRedirected || System.Console.IsErrorRedirected)
 
-let colorize colorCode text =
-    if supportsColor () then
+let colorize useColor colorCode text =
+    if useColor then
         sprintf "\u001b[%sm%s\u001b[0m" colorCode text
     else
         text
 
-let getSymbol outcome =
+let getSymbol useColor outcome =
     match outcome with
-    | Passed _ -> colorize "32" "✓" // green
+    | Passed _ -> colorize useColor "32" "✓" // green
     | Failed _
-    | Errored _ -> colorize "31" "✕" // red
-    | Skipped _ -> colorize "90" "○" // gray
+    | Errored _ -> colorize useColor "31" "✕" // red
+    | Skipped _ -> colorize useColor "90" "○" // gray
 
-let formatOutcome outcome =
+let formatOutcome useColor (slowMs: float option) outcome =
+    let duration durationMs =
+        let marker =
+            if isSlow slowMs outcome then
+                " " + colorize useColor "33" "[slow]"
+            else
+                ""
+
+        formatDuration durationMs + marker
+
     match outcome with
-    | Passed(name, duration) -> sprintf "%s (%s)" name (formatDuration duration)
-    | Failed(name, errs, duration) ->
+    | Passed(name, durationMs) -> sprintf "%s (%s)" name (duration durationMs)
+    | Failed(name, errs, durationMs) ->
         let errMsg = errs |> List.map formatError |> String.concat "\n"
-        sprintf "%s (%s)\n%s" name (formatDuration duration) errMsg
+        sprintf "%s (%s)\n%s" name (duration durationMs) errMsg
     | Skipped(name, reason) -> sprintf "%s (skipped: %s)" name reason
-    | Errored(name, ex, duration) -> sprintf "%s (%s)\n%2sException: %s" name (formatDuration duration) "" ex.Message
+    | Errored(name, ex, durationMs) -> sprintf "%s (%s)\n%2sException: %s" name (duration durationMs) "" ex.Message
 
-let formatSuiteOutcome (so: SuiteOutcome) =
+let formatSuiteOutcome useColor (slowMs: float option) (so: SuiteOutcome) =
     let header =
         sprintf "\n=== %s (%s) ===" so.SuiteName (formatDuration so.TotalDurationMs)
 
     let results =
         so.Results
-        |> List.map (fun r -> sprintf "%s %s" (getSymbol r) (formatOutcome r))
+        |> List.map (fun r -> sprintf "%s %s" (getSymbol useColor r) (formatOutcome useColor slowMs r))
         |> String.concat "\n"
 
     sprintf "%s\n%s" header results
 
 // Summary
 let summarize (outcomes: SuiteOutcome list) =
-    let allResults = outcomes |> List.collect (fun so -> so.Results)
-
-    let passed =
-        allResults
-        |> List.filter (function
-            | Passed _ -> true
-            | _ -> false)
-        |> List.length
-
-    let failed =
-        allResults
-        |> List.filter (function
-            | Failed _ -> true
-            | _ -> false)
-        |> List.length
-
-    let skipped =
-        allResults
-        |> List.filter (function
-            | Skipped _ -> true
-            | _ -> false)
-        |> List.length
-
-    let errored =
-        allResults
-        |> List.filter (function
-            | Errored _ -> true
-            | _ -> false)
-        |> List.length
-
-    let total = passed + failed + errored + skipped
-    let totalTime = outcomes |> List.sumBy (fun so -> so.TotalDurationMs)
+    let counts = count outcomes
+    let total = counts.Passed + counts.Failed + counts.Errored + counts.Skipped
 
     sprintf
         "\n%d/%d passed, %d failed, %d skipped, %d errored (Total: %s)"
-        passed
+        counts.Passed
         total
-        failed
-        skipped
-        errored
-        (formatDuration totalTime)
+        counts.Failed
+        counts.Skipped
+        counts.Errored
+        (formatDuration counts.DurationMs)
 
+/// Appended to the summary only when a slow threshold is set.
+let formatSlowSummary (slowMs: float option) (outcomes: SuiteOutcome list) =
+    match slowMs with
+    | Some threshold ->
+        let slowCount =
+            outcomes
+            |> List.collect (fun so -> so.Results)
+            |> List.filter (isSlow slowMs)
+            |> List.length
+
+        sprintf ", %d slow (> %s)" slowCount (formatDuration threshold)
+    | None -> ""
+
+let printResultsWith useColor (slowMs: float option) (outcomes: SuiteOutcome list) =
+    outcomes |> List.iter (formatSuiteOutcome useColor slowMs >> printfn "%s")
+    printfn "%s%s" (summarize outcomes) (formatSlowSummary slowMs outcomes)
+    exitCode (count outcomes)
 
 let printResults outcomes =
-    outcomes |> List.iter (formatSuiteOutcome >> printfn "%s")
+    printResultsWith (supportsColor ()) None outcomes
 
-    printfn "%s" (summarize outcomes)
+/// Escapes XML special characters. Control characters other than tab, newline and
+/// carriage return are invalid in XML 1.0 even when escaped, so they become U+FFFD.
+let private escapeXml (text: string) =
+    let builder = System.Text.StringBuilder(text.Length)
 
-    let allPassed =
-        outcomes
-        |> List.forall (fun so ->
-            so.Results
-            |> List.forall (function
-                | Passed _
-                | Skipped _ -> true
-                | _ -> false))
+    for character in text do
+        match character with
+        | '&' -> builder.Append("&amp;") |> ignore
+        | '<' -> builder.Append("&lt;") |> ignore
+        | '>' -> builder.Append("&gt;") |> ignore
+        | '"' -> builder.Append("&quot;") |> ignore
+        | '\'' -> builder.Append("&apos;") |> ignore
+        | '\t'
+        | '\n'
+        | '\r' -> builder.Append(character) |> ignore
+        | control when control < ' ' -> builder.Append('�') |> ignore
+        | other -> builder.Append(other) |> ignore
 
-    if allPassed then 0 else 1
+    builder.ToString()
 
 let summarizeJUnit (outcomes: SuiteOutcome list) : string =
-    let escapeXml (s: string) =
-        s
-            .Replace("&", "&amp;")
-            .Replace("<", "&lt;")
-            .Replace(">", "&gt;")
-            .Replace("\"", "&quot;")
-            .Replace("'", "&apos;")
-
     let formatTime (ms: float) = sprintf "%.3f" (ms / 1000.0)
 
     let testcaseXml (outcome: TestOutcome) =
@@ -554,137 +645,133 @@ let summarizeJUnit (outcomes: SuiteOutcome list) : string =
                 (escapeXml (string ex))
 
     let suiteXml (so: SuiteOutcome) =
-        let tests = so.Results.Length
-
-        let failures =
-            so.Results
-            |> List.filter (function
-                | Failed _ -> true
-                | _ -> false)
-            |> List.length
-
-        let errors =
-            so.Results
-            |> List.filter (function
-                | Errored _ -> true
-                | _ -> false)
-            |> List.length
-
-        let skipped =
-            so.Results
-            |> List.filter (function
-                | Skipped _ -> true
-                | _ -> false)
-            |> List.length
-
+        let counts = count [ so ]
         let cases = so.Results |> List.map testcaseXml |> String.concat "\n"
 
         sprintf
             "%4s<testsuite name=\"%s\" tests=\"%d\" failures=\"%d\" errors=\"%d\" skipped=\"%d\" time=\"%s\">\n%s\n%4s</testsuite>"
             ""
             (escapeXml so.SuiteName)
-            tests
-            failures
-            errors
-            skipped
+            so.Results.Length
+            counts.Failed
+            counts.Errored
+            counts.Skipped
             (formatTime so.TotalDurationMs)
             cases
             ""
 
-    let allResults = outcomes |> List.collect (fun so -> so.Results)
-    let totalTests = allResults.Length
-
-    let totalFailures =
-        allResults
-        |> List.filter (function
-            | Failed _ -> true
-            | _ -> false)
-        |> List.length
-
-    let totalErrors =
-        allResults
-        |> List.filter (function
-            | Errored _ -> true
-            | _ -> false)
-        |> List.length
-
-    let totalSkipped =
-        allResults
-        |> List.filter (function
-            | Skipped _ -> true
-            | _ -> false)
-        |> List.length
-
-    let totalTime = outcomes |> List.sumBy (fun so -> so.TotalDurationMs)
+    let counts = count outcomes
+    let total = counts.Passed + counts.Failed + counts.Errored + counts.Skipped
     let suites = outcomes |> List.map suiteXml |> String.concat "\n"
 
     sprintf
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites tests=\"%d\" failures=\"%d\" errors=\"%d\" skipped=\"%d\" time=\"%s\">\n%s\n</testsuites>"
-        totalTests
-        totalFailures
-        totalErrors
-        totalSkipped
-        (formatTime totalTime)
+        total
+        counts.Failed
+        counts.Errored
+        counts.Skipped
+        (formatTime counts.DurationMs)
         suites
 
+// Command line (parsing is pure; parseTestArgs is the driver)
+type RunOptions =
+    { Filter: Filter
+      Parallel: bool
+      JUnitFile: string option
+      /// Tests that take longer than this many milliseconds are marked slow.
+      SlowMs: float option }
 
-let parseTestArgs (args: string array) (suites: TestSuite list) =
+[<RequireQualifiedAccess>]
+type Command =
+    | Help
+    | Run of RunOptions
+    | Invalid of message: string
 
-    let xmlFile =
-        args
-        |> Array.tryFindIndex ((=) "--xml")
-        |> Option.bind (fun i -> Array.tryItem (i + 1) args)
+let helpText =
+    "Usage:
+  <no args>                   Run all suites sequentially
+  --suite <name>              Run specific suite
+  --test <suite> <test>       Run specific test
+  --match <pattern>           Run tests matching pattern
+  --parallel                  Run suites in parallel (combines with the above)
+  --junit <file>              Write JUnit XML to file instead of console output (alias: --xml)
+  --slow <ms>                 Mark tests slower than <ms> milliseconds
+  --help, -h                  Show this help"
 
-    let args =
-        match Array.tryFindIndex ((=) "--xml") args with
-        | Some i -> Array.removeAt (i + 1) args |> Array.removeAt i
-        | None -> args
+let defaultRunOptions =
+    { Filter = Filter.All
+      Parallel = false
+      JUnitFile = None
+      SlowMs = None }
 
-    let outputResults (outcomes: SuiteOutcome list) =
-        match xmlFile with
-        | Some file ->
-            System.IO.File.WriteAllText(file, summarizeJUnit outcomes)
-            printfn "Results written to %s" file
+/// Parses arguments after the program name. Flags combine in any order.
+let parseArgs (arguments: string array) : Command =
+    let mutable options = defaultRunOptions
+    let mutable index = 0
+    let mutable stopped = None
 
-            let allPassed =
-                outcomes
-                |> List.forall (fun so ->
-                    so.Results
-                    |> List.forall (function
-                        | Passed _
-                        | Skipped _ -> true
-                        | _ -> false))
+    // each pass consumes at least one argument or stops, so the loop is bounded
+    while stopped.IsNone && index < arguments.Length do
+        let remaining = arguments.Length - index
 
-            if allPassed then 0 else 1
-        | None -> printResults outcomes
+        match arguments[index] with
+        | "--help"
+        | "-h" -> stopped <- Some Command.Help
+        | "--parallel" ->
+            options <- { options with Parallel = true }
+            index <- index + 1
+        | "--suite" when remaining >= 2 ->
+            options <- { options with Filter = Filter.Suite arguments[index + 1] }
+            index <- index + 2
+        | "--test" when remaining >= 3 ->
+            options <- { options with Filter = Filter.Test(arguments[index + 1], arguments[index + 2]) }
+            index <- index + 3
+        | "--match" when remaining >= 2 ->
+            options <- { options with Filter = Filter.Match arguments[index + 1] }
+            index <- index + 2
+        | "--junit"
+        | "--xml" when remaining >= 2 ->
+            options <- { options with JUnitFile = Some arguments[index + 1] }
+            index <- index + 2
+        | "--slow" when remaining >= 2 ->
+            let text = arguments[index + 1]
 
-    let printHelp () =
-        printfn "Usage:"
-        printfn "  <no args>                   Run all suites sequentially"
-        printfn "  --suite <name>              Run specific suite"
-        printfn "  --test <suite> <test>       Run specific test"
-        printfn "  --match <pattern>           Run tests matching pattern"
-        printfn "  --parallel                  Run all suites in parallel"
-        printfn "  --xml <file>                Output results as JUnit XML to file"
-        printfn "  --help, -h                  Show this help"
+            match
+                System.Double.TryParse(
+                    text,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture
+                )
+            with
+            | true, milliseconds when milliseconds >= 0.0 ->
+                options <- { options with SlowMs = Some milliseconds }
+                index <- index + 2
+            | _ -> stopped <- Some(Command.Invalid(sprintf "--slow needs a number of milliseconds, got: %s" text))
+        | unknown ->
+            stopped <- Some(Command.Invalid(sprintf "Unknown or incomplete argument: %s. Use --help for usage." unknown))
+
+    defaultArg stopped (Command.Run options)
+
+/// Entry point: parses arguments, runs, prints or writes the report. Returns 1 on any failure.
+let parseTestArgs (args: string array) (suites: TestSuite list) : int =
+    match parseArgs args with
+    | Command.Help ->
+        printfn "%s" helpText
         0
-
-    match args with
-    | [| "--help" |]
-    | [| "-h" |] -> printHelp ()
-    | [| "--suite"; suiteName |] ->
-        printfn "=== Running Suite: %s ===" suiteName
-        runSuiteByName suiteName suites |> outputResults
-    | [| "--test"; suiteName; testName |] ->
-        printfn "=== Running Test: %s -> %s ===" suiteName testName
-        runSingleTest suiteName testName suites |> outputResults
-    | [| "--match"; pattern |] ->
-        printfn "=== Running Tests Matching: %s ===" pattern
-        runTestsMatching pattern suites |> outputResults
-    | [| "--parallel" |] ->
-        printfn "=== Running All Suites (Parallel) ==="
-        runAllSuitesParallel suites |> outputResults
-    | [||] -> runAllSuites suites |> outputResults
-    | _ ->
-        printfn "Unknown arguments. Use --help for usage."
+    | Command.Invalid message ->
+        eprintfn "%s" message
         1
+    | Command.Run options ->
+        let run = if options.Parallel then runSuitesParallel else runSuites
+        let outcomes = run systemClock options.Filter suites
+
+        match options.JUnitFile with
+        | Some path ->
+            try
+                System.IO.File.WriteAllText(path, summarizeJUnit outcomes)
+                printfn "Results written to %s" path
+                exitCode (count outcomes)
+            with error ->
+                eprintfn "Cannot write '%s': %s" path error.Message
+                1
+        | None -> printResultsWith (supportsColor ()) options.SlowMs outcomes

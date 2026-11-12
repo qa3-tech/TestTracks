@@ -3,6 +3,7 @@ namespace TestTracksCSharp;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.FSharp.Collections;
 using Microsoft.FSharp.Core;
 
 
@@ -27,44 +28,58 @@ public readonly record struct Outcome(
 /// </summary>
 public static class Outcomes
 {
-    public static Outcome Pass() => new(OutcomeKind.Passed, [], null);
+  public static Outcome Pass() => new(OutcomeKind.Passed, [], null);
 
-    public static Outcome Fail(string message) => new(OutcomeKind.Failed, [new TestError(message)], null);
+  public static Outcome Fail(string message) => new(OutcomeKind.Failed, [new TestError(message)], null);
 
-    public static Outcome Fail(string message, object expected, object actual) =>
-        new(OutcomeKind.Failed, [new TestError(message, expected, actual)], null);
+  public static Outcome Fail(string message, object expected, object actual) =>
+      new(OutcomeKind.Failed, [new TestError(message, expected, actual)], null);
 
-    public static Outcome Fail(IReadOnlyList<TestError> errors) => new(OutcomeKind.Failed, errors, null);
+  public static Outcome Fail(IReadOnlyList<TestError> errors) => new(OutcomeKind.Failed, errors, null);
 
-    public static Outcome Skip(string reason) => new(OutcomeKind.Skipped, [], reason);
+  public static Outcome Skip(string reason) => new(OutcomeKind.Skipped, [], reason);
 
-    public static bool IsPassed(Outcome o) => o.Kind == OutcomeKind.Passed;
-    public static bool IsFailed(Outcome o) => o.Kind == OutcomeKind.Failed;
-    public static bool IsSkipped(Outcome o) => o.Kind == OutcomeKind.Skipped;
+  public static bool IsPassed(Outcome o) => o.Kind == OutcomeKind.Passed;
+  public static bool IsFailed(Outcome o) => o.Kind == OutcomeKind.Failed;
+  public static bool IsSkipped(Outcome o) => o.Kind == OutcomeKind.Skipped;
 
-    public static Outcome And(Outcome a, Outcome b) => (a.Kind, b.Kind) switch
-    {
-        (OutcomeKind.Skipped, _) => a,
-        (_, OutcomeKind.Skipped) => b,
-        (OutcomeKind.Passed, OutcomeKind.Passed) => Pass(),
-        (OutcomeKind.Failed, OutcomeKind.Passed) => a,
-        (OutcomeKind.Passed, OutcomeKind.Failed) => b,
-        (OutcomeKind.Failed, OutcomeKind.Failed) => Fail([.. a.Errors, .. b.Errors]),
-        _ => a
-    };
+  /// Collects every error. Fail outranks Skip; Skip outranks Pass.
+  public static Outcome And(Outcome a, Outcome b) => (a.Kind, b.Kind) switch
+  {
+    (OutcomeKind.Failed, OutcomeKind.Failed) => Fail([.. a.Errors, .. b.Errors]),
+    (OutcomeKind.Failed, _) => a,
+    (_, OutcomeKind.Failed) => b,
+    (OutcomeKind.Skipped, _) => a,
+    (_, OutcomeKind.Skipped) => b,
+    _ => Pass()
+  };
 
-    public static Outcome All(params Outcome[] results) =>
-        results.Length == 0 ? Pass() : results.Aggregate(And);
+  public static Outcome All(params Outcome[] results) =>
+      results.Length == 0 ? Pass() : results.Aggregate(And);
 
-    internal static Outcome FromFSharp(TestTracks.TestResult<Unit> result) => result switch
-    {
-        TestTracks.TestResult<Unit>.Pass => Pass(),
-        TestTracks.TestResult<Unit>.Fail f => Fail(
-            f.Item.Select(e => new TestError(e.Message, e.Expected?.Value, e.Actual?.Value)).ToList()
-        ),
-        TestTracks.TestResult<Unit>.Skip s => Skip(s.Item),
-        _ => Fail("Unknown result type")
-    };
+  internal static TestTracks.TestError ToFSharpError(TestError error) => new(
+      error.Message,
+      error.Expected is not null ? FSharpOption<object>.Some(error.Expected) : FSharpOption<object>.None,
+      error.Actual is not null ? FSharpOption<object>.Some(error.Actual) : FSharpOption<object>.None
+  );
+
+  /// Keeps every error with its expected and actual values.
+  internal static TestTracks.TestResult<Unit> ToFSharp(Outcome outcome) => outcome.Kind switch
+  {
+    OutcomeKind.Passed => TestTracks.pass,
+    OutcomeKind.Skipped => TestTracks.skip<Unit>(outcome.SkipReason ?? ""),
+    _ => TestTracks.TestResult<Unit>.NewFail(ListModule.OfSeq(outcome.Errors.Select(ToFSharpError)))
+  };
+
+  internal static Outcome FromFSharp(TestTracks.TestResult<Unit> result) => result switch
+  {
+    TestTracks.TestResult<Unit>.Pass => Pass(),
+    TestTracks.TestResult<Unit>.Fail f => Fail(
+        f.Item.Select(e => new TestError(e.Message, e.Expected?.Value, e.Actual?.Value)).ToList()
+    ),
+    TestTracks.TestResult<Unit>.Skip s => Skip(s.Item),
+    _ => Fail("Unknown result type")
+  };
 }
 
 /// <summary>
@@ -86,21 +101,21 @@ public enum TestOutcomeKind { Passed, Failed, Skipped, Errored }
 /// </summary>
 public static class TestOutcomeResults
 {
-    internal static TestOutcomeResult FromFSharp(TestTracks.TestOutcome outcome) => outcome switch
-    {
-        TestTracks.TestOutcome.Passed p => new(TestOutcomeKind.Passed, p.name, p.durationMs, [], null, null),
-        TestTracks.TestOutcome.Failed f => new(
-            TestOutcomeKind.Failed,
-            f.name,
-            f.durationMs,
-            f.errors.Select(e => new TestError(e.Message, e.Expected?.Value, e.Actual?.Value)).ToList(),
-            null,
-            null
-        ),
-        TestTracks.TestOutcome.Skipped s => new(TestOutcomeKind.Skipped, s.name, 0, [], s.reason, null),
-        TestTracks.TestOutcome.Errored e => new(TestOutcomeKind.Errored, e.name, e.durationMs, [], null, e.exn),
-        _ => new(TestOutcomeKind.Errored, "Unknown", 0, [], null, null)
-    };
+  internal static TestOutcomeResult FromFSharp(TestTracks.TestOutcome outcome) => outcome switch
+  {
+    TestTracks.TestOutcome.Passed p => new(TestOutcomeKind.Passed, p.name, p.durationMs, [], null, null),
+    TestTracks.TestOutcome.Failed f => new(
+        TestOutcomeKind.Failed,
+        f.name,
+        f.durationMs,
+        f.errors.Select(e => new TestError(e.Message, e.Expected?.Value, e.Actual?.Value)).ToList(),
+        null,
+        null
+    ),
+    TestTracks.TestOutcome.Skipped s => new(TestOutcomeKind.Skipped, s.name, 0, [], s.reason, null),
+    TestTracks.TestOutcome.Errored e => new(TestOutcomeKind.Errored, e.name, e.durationMs, [], null, e.exn),
+    _ => new(TestOutcomeKind.Errored, "Unknown", 0, [], null, null)
+  };
 }
 
 /// <summary>
@@ -117,15 +132,15 @@ public readonly record struct SuiteResult(
 /// </summary>
 public static class SuiteResults
 {
-    public static int Passed(SuiteResult s) => s.Results.Count(r => r.Kind == TestOutcomeKind.Passed);
-    public static int Failed(SuiteResult s) => s.Results.Count(r => r.Kind == TestOutcomeKind.Failed);
-    public static int Skipped(SuiteResult s) => s.Results.Count(r => r.Kind == TestOutcomeKind.Skipped);
-    public static int Errored(SuiteResult s) => s.Results.Count(r => r.Kind == TestOutcomeKind.Errored);
-    public static bool AllPassed(SuiteResult s) => s.Results.All(r => r.Kind is TestOutcomeKind.Passed or TestOutcomeKind.Skipped);
+  public static int Passed(SuiteResult s) => s.Results.Count(r => r.Kind == TestOutcomeKind.Passed);
+  public static int Failed(SuiteResult s) => s.Results.Count(r => r.Kind == TestOutcomeKind.Failed);
+  public static int Skipped(SuiteResult s) => s.Results.Count(r => r.Kind == TestOutcomeKind.Skipped);
+  public static int Errored(SuiteResult s) => s.Results.Count(r => r.Kind == TestOutcomeKind.Errored);
+  public static bool AllPassed(SuiteResult s) => s.Results.All(r => r.Kind is TestOutcomeKind.Passed or TestOutcomeKind.Skipped);
 
-    internal static SuiteResult FromFSharp(TestTracks.SuiteOutcome outcome) => new(
-        outcome.SuiteName,
-        outcome.Results.Select(TestOutcomeResults.FromFSharp).ToList(),
-        outcome.TotalDurationMs
-    );
+  internal static SuiteResult FromFSharp(TestTracks.SuiteOutcome outcome) => new(
+      outcome.SuiteName,
+      outcome.Results.Select(TestOutcomeResults.FromFSharp).ToList(),
+      outcome.TotalDurationMs
+  );
 }
